@@ -23,7 +23,6 @@ import re
 import csv as csv_module
 from pathlib import Path
 
-import scipy
 import numpy as np
 import pandas as pd
 
@@ -203,6 +202,16 @@ def make_figure_canvas(figsize):
     return fig, ax, FigureCanvas(fig)
 
 
+def swatch_style(color):
+    """Stylesheet for a small color-swatch button, overriding the app-wide
+    button padding (which alone would force ~66px minimum on an empty
+    button) so it can be sized compactly."""
+    return (
+        f"background-color: {color}; border: 1px solid #999999; "
+        f"border-radius: 4px; padding: 0px; min-height: 0px;"
+    )
+
+
 def make_export_group(on_export, default_w=7.0, default_h=5.0):
     """Compact 'Export figure' box: W/H/DPI spinboxes on one line, the
     export button below — split across two rows (rather than one long row)
@@ -213,11 +222,11 @@ def make_export_group(on_export, default_w=7.0, default_h=5.0):
 
     spin_row = QHBoxLayout()
     width_spin = make_spin(min_=1, max_=40, decimals=2, value=default_w)
-    width_spin.setMaximumWidth(55)
+    width_spin.setMaximumWidth(80)
     height_spin = make_spin(min_=1, max_=40, decimals=2, value=default_h)
-    height_spin.setMaximumWidth(55)
+    height_spin.setMaximumWidth(80)
     dpi_spin = make_spin(min_=50, max_=1200, decimals=0, value=300)
-    dpi_spin.setMaximumWidth(55)
+    dpi_spin.setMaximumWidth(80)
 
     spin_row.addWidget(QLabel("W:"))
     spin_row.addWidget(width_spin)
@@ -988,6 +997,259 @@ class GaussianFitPanel(QWidget):
         return curves
 
 
+# ----------------------------------------------------------------------
+# Exponential decay fitting (sum of N exponentials + optional background) —
+# for TRPL / lifetime decay data: I(t) = sum_i A_i * exp(-(t-t0)/tau_i) + bg
+# ----------------------------------------------------------------------
+
+def _build_decay_model(n_exp, baseline_mode, x0):
+    def model(x, *params):
+        x = np.asarray(x, dtype=float)
+        xr = x - x0
+        y = np.zeros_like(x)
+        for i in range(n_exp):
+            amp, tau = params[2 * i:2 * i + 2]
+            y += amp * np.exp(-xr / tau)
+        y += _baseline_values(x, params[2 * n_exp:], baseline_mode)
+        return y
+    return model
+
+
+def _estimate_decay_params(x, y, n_exp, baseline_mode):
+    xmin, xmax = float(np.nanmin(x)), float(np.nanmax(x))
+    span = xmax - xmin if xmax > xmin else 1.0
+    xr = x - xmin
+
+    if baseline_mode == "constant":
+        tail_n = max(3, len(y) // 10)
+        c0 = float(np.mean(y[-tail_n:]))
+        baseline_vals = np.full_like(y, c0)
+        base_p0 = [c0]
+    else:
+        baseline_vals = np.zeros_like(y)
+        base_p0 = []
+
+    residual = y - baseline_vals
+    y0 = float(residual[0]) if residual.size else 1.0
+    if y0 <= 0:
+        y0 = float(np.nanmax(residual)) if np.nanmax(residual) > 0 else 1.0
+
+    # Rough single-exponential lifetime via log-linear regression on the
+    # (assumed decaying) positive part of the residual.
+    mask = residual > 0
+    tau_est = span / 5
+    if mask.sum() >= 2:
+        try:
+            slope, _intercept = np.polyfit(xr[mask], np.log(residual[mask]), 1)
+            if slope < 0:
+                tau_est = -1.0 / slope
+        except Exception:
+            pass
+    tau_est = abs(tau_est) if tau_est and np.isfinite(tau_est) else span / 5
+    tau_est = max(tau_est, span / 200)
+
+    # Spread initial lifetime guesses (fast/medium/slow) around that estimate
+    # so curve_fit can tell multiple components apart from the start.
+    factors = np.geomspace(0.3, 3.0, n_exp) if n_exp > 1 else [1.0]
+    p0 = []
+    amp_each = y0 / n_exp
+    for f in factors:
+        p0 += [amp_each, tau_est * f]
+    p0 += base_p0
+    return p0
+
+
+class ExpDecayFitPanel(QWidget):
+    def __init__(self, curve: Curve, add_curves_callback, parent=None):
+        super().__init__(parent)
+        self.curve = curve
+        self.add_curves_callback = add_curves_callback
+        self.fit_result = None
+
+        self.full_x, self.full_y = curve.xy()
+
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+
+        self.xmin_spin = make_spin(decimals=4)
+        self.xmax_spin = make_spin(decimals=4)
+        if self.full_x.size:
+            self.xmin_spin.setValue(float(np.nanmin(self.full_x)))
+            self.xmax_spin.setValue(float(np.nanmax(self.full_x)))
+        form.addRow("Fit X min:", self.xmin_spin)
+        form.addRow("Fit X max:", self.xmax_spin)
+
+        self.n_exp_spin = make_spin(min_=1, max_=4, decimals=0, value=1)
+        form.addRow("Number of exponentials:", self.n_exp_spin)
+
+        self.baseline_box = ComboBox()
+        self.baseline_box.addItems(["none", "constant"])
+        self.baseline_box.setCurrentText("constant")
+        form.addRow("Background:", self.baseline_box)
+
+        self.log_y_chk = QCheckBox("Log Y preview (standard for decay data)")
+        self.log_y_chk.setChecked(True)
+        self.log_y_chk.toggled.connect(self._refresh_preview_scale)
+        form.addRow("", self.log_y_chk)
+
+        layout.addLayout(form)
+
+        run_btn = QPushButton("Run fit")
+        run_btn.clicked.connect(self.run_fit)
+        layout.addWidget(run_btn)
+
+        self.fig, self.ax, self.preview_canvas = make_figure_canvas((5, 3.2))
+        layout.addWidget(self.preview_canvas)
+        self._plot_data_only()
+
+        self.results_label = QLabel("Run a fit to see lifetime parameters.")
+        self.results_label.setWordWrap(True)
+        self.results_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.results_label)
+
+        opts_row = QHBoxLayout()
+        self.add_total_chk = QCheckBox("Add total fit curve")
+        self.add_total_chk.setChecked(True)
+        self.add_components_chk = QCheckBox("Add individual component curves")
+        copy_btn = QPushButton("Copy results")
+        copy_btn.clicked.connect(self.copy_results)
+        opts_row.addWidget(self.add_total_chk)
+        opts_row.addWidget(self.add_components_chk)
+        opts_row.addStretch()
+        opts_row.addWidget(copy_btn)
+        layout.addLayout(opts_row)
+
+        self.apply_btn = add_apply_row(layout, self.add_curves_to_plot, "Add Fit Curve(s) to Plot")
+        self.apply_btn.setEnabled(False)
+
+    def _plot_data_only(self):
+        self.ax.clear()
+        self.ax.plot(self.full_x, self.full_y, '.', color='#1f77b4', markersize=3, label='Data')
+        if self.log_y_chk.isChecked():
+            self.ax.set_yscale('log')
+        self.ax.legend(fontsize=8)
+        self.preview_canvas.draw()
+
+    def _refresh_preview_scale(self):
+        self.ax.set_yscale('log' if self.log_y_chk.isChecked() else 'linear')
+        self.preview_canvas.draw_idle()
+
+    def run_fit(self):
+        xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
+        if xmin > xmax:
+            xmin, xmax = xmax, xmin
+        mask = (self.full_x >= xmin) & (self.full_x <= xmax)
+        x, y = self.full_x[mask], self.full_y[mask]
+        if x.size < 5:
+            QMessageBox.warning(self, "Not enough data", "Selected X range has too few points to fit.")
+            return
+
+        n_exp = int(self.n_exp_spin.value())
+        baseline_mode = self.baseline_box.currentText()
+        x0 = float(x.min())
+
+        model = _build_decay_model(n_exp, baseline_mode, x0)
+        p0 = _estimate_decay_params(x, y, n_exp, baseline_mode)
+
+        span = (x.max() - x.min()) if x.max() > x.min() else 1.0
+        lower, upper = [], []
+        for _ in range(n_exp):
+            lower += [0, 1e-8]
+            upper += [np.inf, 100 * span]
+        if baseline_mode == "constant":
+            lower += [-np.inf]
+            upper += [np.inf]
+
+        try:
+            popt, _pcov = curve_fit(model, x, y, p0=p0, bounds=(lower, upper), maxfev=50000)
+        except Exception as e:
+            QMessageBox.warning(self, "Fit failed", f"curve_fit did not converge:\n{e}")
+            return
+
+        y_fit = model(x, *popt)
+        ss_res = float(np.sum((y - y_fit) ** 2))
+        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+        self.fit_result = {
+            "model": model, "popt": popt, "n_exp": n_exp,
+            "baseline_mode": baseline_mode, "x0": x0, "x": x,
+        }
+
+        x_dense = np.linspace(x.min(), x.max(), 400)
+        self.ax.clear()
+        self.ax.plot(self.full_x, self.full_y, '.', color='#1f77b4', markersize=3, label='Data')
+        self.ax.plot(x_dense, model(x_dense, *popt), '-', color='#d62728', linewidth=1.6, label='Fit')
+        base = _baseline_values(x_dense, popt[2 * n_exp:], baseline_mode)
+        for i in range(n_exp):
+            amp, tau = popt[2 * i:2 * i + 2]
+            comp = amp * np.exp(-(x_dense - x0) / tau) + base
+            self.ax.plot(x_dense, comp, '--', linewidth=1, alpha=0.7, label=f'\u03c4{i + 1}={tau:.3g}')
+        if self.log_y_chk.isChecked():
+            self.ax.set_yscale('log')
+        self.ax.legend(fontsize=7)
+        self.preview_canvas.draw()
+
+        lines = [f"R\u00b2 = {r2:.5f}"]
+        amps, taus = [], []
+        for i in range(n_exp):
+            amp, tau = popt[2 * i:2 * i + 2]
+            amps.append(amp)
+            taus.append(tau)
+            lines.append(f"Component {i + 1}: amplitude={amp:.5g}, \u03c4={tau:.5g}")
+        if n_exp > 1:
+            amps_arr, taus_arr = np.array(amps), np.array(taus)
+            tau_avg = float(np.sum(amps_arr * taus_arr) / np.sum(amps_arr))
+            lines.append(f"Amplitude-weighted average \u03c4 = {tau_avg:.5g}")
+        base_p = popt[2 * n_exp:]
+        if baseline_mode == "constant":
+            lines.append(f"Background: constant={base_p[0]:.5g}")
+        self.results_label.setText("\n".join(lines))
+
+        self.apply_btn.setEnabled(True)
+
+    def copy_results(self):
+        text = self.results_label.text()
+        if not text or text.startswith("Run a fit"):
+            QMessageBox.information(self, "No results yet", "Run a fit first.")
+            return
+        QApplication.clipboard().setText(text)
+
+    def add_curves_to_plot(self):
+        curves = self._build_result_curves(self.curve)
+        if curves:
+            self.add_curves_callback(curves)
+
+    def _build_result_curves(self, original_curve):
+        if not self.fit_result:
+            return []
+        model = self.fit_result["model"]
+        popt = self.fit_result["popt"]
+        n_exp = self.fit_result["n_exp"]
+        baseline_mode = self.fit_result["baseline_mode"]
+        x0 = self.fit_result["x0"]
+        x = self.fit_result["x"]
+        x_dense = np.linspace(x.min(), x.max(), 400)
+
+        curves = []
+        if self.add_total_chk.isChecked():
+            df = pd.DataFrame({"X": x_dense, "Y": model(x_dense, *popt)})
+            c = Curve(original_curve.path, df)
+            c.label = f"{original_curve.label}_fit"
+            curves.append(c)
+        if self.add_components_chk.isChecked():
+            base = _baseline_values(x_dense, popt[2 * n_exp:], baseline_mode)
+            for i in range(n_exp):
+                amp, tau = popt[2 * i:2 * i + 2]
+                comp = amp * np.exp(-(x_dense - x0) / tau) + base
+                df = pd.DataFrame({"X": x_dense, "Y": comp})
+                c = Curve(original_curve.path, df)
+                c.label = f"{original_curve.label}_tau{i + 1} ({tau:.4g})"
+                curves.append(c)
+        return curves
+
+
 class CurveToolsDialog(QDialog):
     def __init__(self, main_window, selected_curves, all_curves, parent=None):
         super().__init__(parent)
@@ -1052,6 +1314,22 @@ class CurveToolsDialog(QDialog):
             tabs.addTab(self._placeholder(
                 "Select exactly one curve in the table, then reopen Curve Tools."
             ), "Fit Gaussian")
+
+        # --- Fit Exponential Decay (needs exactly one curve, and scipy) ---
+        if not SCIPY_AVAILABLE:
+            tabs.addTab(self._placeholder(
+                "Decay fitting requires scipy. Install it with:\n\npip install scipy"
+            ), "Fit Decay")
+        elif single is not None:
+            def add_decay_curves(new_curves):
+                main_window.curves.extend(new_curves)
+                main_window.refresh_table()
+                main_window.update_plot()
+            tabs.addTab(ExpDecayFitPanel(single, add_decay_curves), "Fit Decay")
+        else:
+            tabs.addTab(self._placeholder(
+                "Select exactly one curve in the table, then reopen Curve Tools."
+            ), "Fit Decay")
 
         close_row = QHBoxLayout()
         close_btn = QPushButton("Close")
@@ -1206,6 +1484,7 @@ class PolarPlotDialog(QDialog):
         form.addRow("", self.visible_chk)
 
         self.color_btn = QPushButton()
+        self.color_btn.setFixedSize(36, 20)
         self.color_btn.clicked.connect(self._pick_color)
         form.addRow("Color:", self.color_btn)
 
@@ -1344,7 +1623,7 @@ class PolarPlotDialog(QDialog):
         self.visible_chk.setChecked(s.visible)
         self.visible_chk.blockSignals(False)
 
-        self.color_btn.setStyleSheet(f"background-color: {s.color};")
+        self.color_btn.setStyleSheet(swatch_style(s.color))
 
         self.points_table.blockSignals(True)
         rows = max(len(s.angle_strs), 1)
@@ -1384,7 +1663,7 @@ class PolarPlotDialog(QDialog):
         color = QColorDialog.getColor(QColor(s.color), self)
         if color.isValid():
             s.color = color.name()
-            self.color_btn.setStyleSheet(f"background-color: {s.color};")
+            self.color_btn.setStyleSheet(swatch_style(s.color))
             self._redraw()
 
     # ------------------------------------------------------------------
@@ -1453,6 +1732,115 @@ class PolarPlotDialog(QDialog):
             self.canvas.draw()
 
 
+class FigureOptionsDialog(QDialog):
+    """All plot-wide display options, moved out of the main window's
+    always-visible layout so the curve list has more room. Reads/writes
+    main_window.plot_opts directly and calls main_window.update_plot() on
+    every change, so edits here are reflected live in the main plot behind
+    this (modal) dialog."""
+
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.setWindowTitle("Figure Options")
+        self.resize(420, 680)
+        opts = main_window.plot_opts
+
+        def set_opt(key, value):
+            main_window.plot_opts[key] = value
+            main_window.update_plot()
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.mode_box = ComboBox()
+        self.mode_box.addItems(["Overlay", "Waterfall", "Power dependence"])
+        self.mode_box.setCurrentText(opts["mode"])
+        self.mode_box.currentTextChanged.connect(lambda t: set_opt("mode", t))
+        form.addRow("Mode:", self.mode_box)
+
+        self.offset_spin = make_spin(min_=-1e9, max_=1e9, decimals=6, value=opts["offset"])
+        self.offset_spin.valueChanged.connect(lambda v: set_opt("offset", v))
+        form.addRow("Waterfall offset:", self.offset_spin)
+
+        self.cmap_box = ComboBox()
+        self.cmap_box.addItems(["None", "viridis", "plasma", "inferno",
+                                 "magma", "cividis", "turbo", "coolwarm"])
+        self.cmap_box.setCurrentText(opts["colormap"])
+        self.cmap_box.currentTextChanged.connect(lambda t: set_opt("colormap", t))
+        form.addRow("Colormap (by Param):", self.cmap_box)
+
+        self.logx_chk = QCheckBox("Log X")
+        self.logx_chk.setChecked(opts["logx"])
+        self.logx_chk.toggled.connect(lambda c: set_opt("logx", c))
+        self.logy_chk = QCheckBox("Log Y")
+        self.logy_chk.setChecked(opts["logy"])
+        self.logy_chk.toggled.connect(lambda c: set_opt("logy", c))
+        log_row = QHBoxLayout()
+        log_row.addWidget(self.logx_chk)
+        log_row.addWidget(self.logy_chk)
+        form.addRow("Axes:", log_row)
+
+        self.norm_chk = QCheckBox("Normalize each curve to max")
+        self.norm_chk.setChecked(opts["normalize"])
+        self.norm_chk.toggled.connect(lambda c: set_opt("normalize", c))
+        form.addRow("", self.norm_chk)
+
+        self.legend_chk = QCheckBox("Show legend")
+        self.legend_chk.setChecked(opts["show_legend"])
+        self.legend_chk.toggled.connect(lambda c: set_opt("show_legend", c))
+        form.addRow("", self.legend_chk)
+
+        self.legend_loc_box = ComboBox()
+        self.legend_loc_box.addItems([
+            "best", "upper right", "upper left", "lower left", "lower right",
+            "center left", "center right", "lower center", "upper center",
+            "center", "outside right",
+        ])
+        self.legend_loc_box.setCurrentText(opts["legend_loc"])
+        self.legend_loc_box.currentTextChanged.connect(lambda t: set_opt("legend_loc", t))
+        form.addRow("Legend position:", self.legend_loc_box)
+
+        self.legend_fontsize_spin = make_spin(min_=4, max_=32, decimals=0, value=opts["legend_fontsize"])
+        self.legend_fontsize_spin.valueChanged.connect(lambda v: set_opt("legend_fontsize", v))
+        form.addRow("Legend font size:", self.legend_fontsize_spin)
+
+        self.legend_ncol_spin = make_spin(min_=1, max_=10, decimals=0, value=opts["legend_ncol"])
+        self.legend_ncol_spin.valueChanged.connect(lambda v: set_opt("legend_ncol", int(v)))
+        form.addRow("Legend columns:", self.legend_ncol_spin)
+
+        self.legend_frame_chk = QCheckBox("Draw frame")
+        self.legend_frame_chk.setChecked(opts["legend_frame"])
+        self.legend_frame_chk.toggled.connect(lambda c: set_opt("legend_frame", c))
+        form.addRow("", self.legend_frame_chk)
+
+        self.legend_title_edit = QLineEdit(opts["legend_title"])
+        self.legend_title_edit.textChanged.connect(lambda t: set_opt("legend_title", t))
+        form.addRow("Legend title:", self.legend_title_edit)
+
+        self.xlabel_edit = QLineEdit(opts["xlabel"])
+        self.xlabel_edit.textChanged.connect(lambda t: set_opt("xlabel", t))
+        form.addRow("X label:", self.xlabel_edit)
+
+        self.ylabel_edit = QLineEdit(opts["ylabel"])
+        self.ylabel_edit.textChanged.connect(lambda t: set_opt("ylabel", t))
+        form.addRow("Y label:", self.ylabel_edit)
+
+        self.title_edit = QLineEdit(opts["title"])
+        self.title_edit.textChanged.connect(lambda t: set_opt("title", t))
+        form.addRow("Title:", self.title_edit)
+
+        layout.addLayout(form)
+        layout.addStretch()
+
+        close_row = QHBoxLayout()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        close_row.addStretch()
+        close_row.addWidget(close_btn)
+        layout.addLayout(close_row)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1472,6 +1860,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         btn_row2 = QHBoxLayout()
+        btn_row3 = QHBoxLayout()
         load_btn = QPushButton("Load…")
         load_btn.clicked.connect(self.load_files)
         tooltip_bits = []
@@ -1485,18 +1874,21 @@ class MainWindow(QMainWindow):
         tools_btn.clicked.connect(self.open_curve_tools)
         remove_btn = QPushButton("Remove selected")
         remove_btn.clicked.connect(self.remove_selected)
+        figure_opts_btn = QPushButton("Figure Options…")
+        figure_opts_btn.clicked.connect(self.open_figure_options)
         export_csv_btn = QPushButton("Export selected as CSV…")
         export_csv_btn.clicked.connect(self.export_selected_as_csv)
         polar_btn = QPushButton("Polar Plot…")
         polar_btn.clicked.connect(self.open_polar_plot)
         btn_row.addWidget(load_btn)
         btn_row.addWidget(tools_btn)
-        btn_row.addWidget(remove_btn)
-        btn_row2.addWidget(export_csv_btn)
-        btn_row2.addWidget(polar_btn)
-        btn_row2.addStretch()
+        btn_row2.addWidget(remove_btn)
+        btn_row2.addWidget(figure_opts_btn)
+        btn_row3.addWidget(export_csv_btn)
+        btn_row3.addWidget(polar_btn)
         left_layout.addLayout(btn_row)
         left_layout.addLayout(btn_row2)
+        left_layout.addLayout(btn_row3)
 
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
@@ -1506,92 +1898,35 @@ class MainWindow(QMainWindow):
         # avoid horizontal scrolling without relying on Qt's flakier
         # Stretch+Fixed mixing behavior.
         header.setSectionResizeMode(QHeaderView.Interactive)
-        for col, width in [(0, 65), (1, 65), (2, 55), (3, 55), (4, 50), (5, 50)]:
-            self.table.setColumnWidth(col, width)
         header.setMinimumSectionSize(30)
-        header.setStretchLastSection(True)
+        for col, width in [(0, 65), (1, 70), (2, 60), (3, 60), (4, 62), (5, 62), (6, 58)]:
+            self.table.setColumnWidth(col, width)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.itemChanged.connect(self.on_table_item_changed)
         left_layout.addWidget(self.table)
 
-        # ---- plot options ----
-        opts = QGroupBox("Plot options")
-        form = QFormLayout(opts)
-
-        self.mode_box = ComboBox()
-        self.mode_box.addItems(["Overlay", "Waterfall", "Power dependence"])
-        self.mode_box.currentIndexChanged.connect(self.update_plot)
-        form.addRow("Mode:", self.mode_box)
-
-        self.offset_spin = make_spin(min_=-1e9, max_=1e9, decimals=6, value=1.0)
-        self.offset_spin.valueChanged.connect(self.update_plot)
-        form.addRow("Waterfall offset:", self.offset_spin)
-
-        self.cmap_box = ComboBox()
-        self.cmap_box.addItems(["None", "viridis", "plasma", "inferno",
-                                 "magma", "cividis", "turbo", "coolwarm"])
-        self.cmap_box.currentIndexChanged.connect(self.update_plot)
-        form.addRow("Colormap (by Param):", self.cmap_box)
-
-        self.logx_chk = QCheckBox("Log X")
-        self.logx_chk.stateChanged.connect(self.update_plot)
-        self.logy_chk = QCheckBox("Log Y")
-        self.logy_chk.stateChanged.connect(self.update_plot)
-        log_row = QHBoxLayout()
-        log_row.addWidget(self.logx_chk)
-        log_row.addWidget(self.logy_chk)
-        form.addRow("Axes:", log_row)
-
-        self.norm_chk = QCheckBox("Normalize each curve to max")
-        self.norm_chk.stateChanged.connect(self.update_plot)
-        form.addRow("", self.norm_chk)
-
-        self.legend_chk = QCheckBox("Show legend")
-        self.legend_chk.setChecked(True)
-        self.legend_chk.stateChanged.connect(self.update_plot)
-        form.addRow("", self.legend_chk)
-
-        self.legend_loc_box = ComboBox()
-        self.legend_loc_box.addItems([
-            "best", "upper right", "upper left", "lower left", "lower right",
-            "center left", "center right", "lower center", "upper center",
-            "center", "outside right",
-        ])
-        self.legend_loc_box.currentIndexChanged.connect(self.update_plot)
-        form.addRow("Legend position:", self.legend_loc_box)
-
-        self.legend_fontsize_spin = make_spin(min_=4, max_=32, decimals=0, value=8)
-        self.legend_fontsize_spin.valueChanged.connect(self.update_plot)
-        form.addRow("Legend font size:", self.legend_fontsize_spin)
-
-        self.legend_ncol_spin = make_spin(min_=1, max_=10, decimals=0, value=1)
-        self.legend_ncol_spin.valueChanged.connect(self.update_plot)
-        form.addRow("Legend columns:", self.legend_ncol_spin)
-
-        self.legend_frame_chk = QCheckBox("Draw frame")
-        self.legend_frame_chk.setChecked(True)
-        self.legend_frame_chk.stateChanged.connect(self.update_plot)
-        form.addRow("", self.legend_frame_chk)
-
-        self.legend_title_edit = QLineEdit()
-        self.legend_title_edit.textChanged.connect(self.update_plot)
-        form.addRow("Legend title:", self.legend_title_edit)
-
-        self.xlabel_edit = QLineEdit()
-        self.xlabel_edit.textChanged.connect(self.update_plot)
-        form.addRow("X label:", self.xlabel_edit)
-
-        self.ylabel_edit = QLineEdit()
-        self.ylabel_edit.textChanged.connect(self.update_plot)
-        form.addRow("Y label:", self.ylabel_edit)
-
-        self.title_edit = QLineEdit()
-        self.title_edit.textChanged.connect(self.update_plot)
-        form.addRow("Title:", self.title_edit)
-
-        left_layout.addWidget(opts)
+        # Plot options live in the Figure Options dialog (see
+        # open_figure_options), not inline here — keeps this panel focused
+        # on the curve list, with more room for a longer list of curves.
+        self.plot_opts = {
+            "mode": "Overlay",
+            "offset": 1.0,
+            "colormap": "None",
+            "logx": False,
+            "logy": False,
+            "normalize": False,
+            "show_legend": True,
+            "legend_loc": "best",
+            "legend_fontsize": 8,
+            "legend_ncol": 1,
+            "legend_frame": True,
+            "legend_title": "",
+            "xlabel": "",
+            "ylabel": "",
+            "title": "",
+        }
 
         export_group, self.fig_width_spin, self.fig_height_spin, self.fig_dpi_spin = \
             make_export_group(self.export_figure, default_w=7.0, default_h=5.0)
@@ -1614,7 +1949,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.canvas)
         splitter.addWidget(right)
 
-        splitter.setSizes([420, 880])
+        splitter.setSizes([500, 800])
 
     # ------------------------------------------------------------------
     # File loading
@@ -1815,7 +2150,8 @@ class MainWindow(QMainWindow):
             self.table.setCellWidget(row, 5, self._make_visible_checkbox(c))
 
             color_btn = QPushButton()
-            color_btn.setStyleSheet(f"background-color: {c.color};")
+            color_btn.setFixedSize(36, 20)
+            color_btn.setStyleSheet(swatch_style(c.color))
             color_btn.clicked.connect(lambda _, curve=c, btn=color_btn: self._pick_color(curve, btn))
             self.table.setCellWidget(row, 6, color_btn)
 
@@ -1862,7 +2198,7 @@ class MainWindow(QMainWindow):
         color = QColorDialog.getColor(QColor(curve.color), self)
         if color.isValid():
             curve.color = color.name()
-            btn.setStyleSheet(f"background-color: {curve.color};")
+            btn.setStyleSheet(swatch_style(curve.color))
             self.update_plot()
 
     def on_table_item_changed(self, item):
@@ -1885,26 +2221,30 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def update_plot(self):
-        mode_map = {0: "overlay", 1: "waterfall", 2: "power"}
-        mode = mode_map[self.mode_box.currentIndex()]
+        mode_map = {"Overlay": "overlay", "Waterfall": "waterfall", "Power dependence": "power"}
+        opts = self.plot_opts
         self.canvas.redraw(
             curves=self.curves,
-            mode=mode,
-            offset=self.offset_spin.value(),
-            logx=self.logx_chk.isChecked(),
-            logy=self.logy_chk.isChecked(),
-            normalize=self.norm_chk.isChecked(),
-            colormap_name=self.cmap_box.currentText(),
-            show_legend=self.legend_chk.isChecked(),
-            xlabel=self.xlabel_edit.text(),
-            ylabel=self.ylabel_edit.text(),
-            title=self.title_edit.text(),
-            legend_loc=self.legend_loc_box.currentText(),
-            legend_fontsize=self.legend_fontsize_spin.value(),
-            legend_ncol=int(self.legend_ncol_spin.value()),
-            legend_frame=self.legend_frame_chk.isChecked(),
-            legend_title=self.legend_title_edit.text(),
+            mode=mode_map[opts["mode"]],
+            offset=opts["offset"],
+            logx=opts["logx"],
+            logy=opts["logy"],
+            normalize=opts["normalize"],
+            colormap_name=opts["colormap"],
+            show_legend=opts["show_legend"],
+            xlabel=opts["xlabel"],
+            ylabel=opts["ylabel"],
+            title=opts["title"],
+            legend_loc=opts["legend_loc"],
+            legend_fontsize=opts["legend_fontsize"],
+            legend_ncol=int(opts["legend_ncol"]),
+            legend_frame=opts["legend_frame"],
+            legend_title=opts["legend_title"],
         )
+
+    def open_figure_options(self):
+        dialog = FigureOptionsDialog(self, self)
+        dialog.exec()
 
     def export_figure(self):
         if not self.curves:
