@@ -23,6 +23,7 @@ import re
 import csv as csv_module
 from pathlib import Path
 
+import scipy
 import numpy as np
 import pandas as pd
 
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QLabel, QComboBox,
     QDoubleSpinBox, QCheckBox, QFileDialog, QHeaderView, QGroupBox,
     QFormLayout, QSplitter, QMessageBox, QColorDialog, QAbstractItemView,
-    QLineEdit, QDialog, QTabWidget
+    QLineEdit, QDialog, QTabWidget, QScrollArea
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -53,14 +54,123 @@ except ImportError:
 try:
     from scipy.optimize import curve_fit
     from scipy.signal import find_peaks
+    from scipy.integrate import simpson
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
+
+# NumPy 2.0 renamed trapz -> trapezoid; support both versions.
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 
 # ----------------------------------------------------------------------
 # Small UI helpers (reduce repeated widget boilerplate)
 # ----------------------------------------------------------------------
+
+APP_STYLESHEET = """
+QWidget {
+    font-size: 13px;
+}
+QMainWindow, QDialog {
+    background-color: #f5f5f7;
+}
+QGroupBox {
+    font-weight: 600;
+    border: 1px solid #d7d7db;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    background-color: #fbfbfc;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: #333;
+}
+QPushButton {
+    background-color: #ffffff;
+    border: 1px solid #c7c7cc;
+    border-radius: 6px;
+    padding: 6px 14px;
+    min-height: 18px;
+}
+QPushButton:hover {
+    background-color: #eef2ff;
+    border-color: #a9b6f5;
+}
+QPushButton:pressed {
+    background-color: #dde4fb;
+}
+QPushButton:disabled {
+    color: #9a9a9e;
+    background-color: #f0f0f2;
+}
+QLineEdit, QDoubleSpinBox {
+    border: 1px solid #c7c7cc;
+    border-radius: 6px;
+    padding: 4px 6px;
+    background-color: #ffffff;
+    min-height: 18px;
+}
+QLineEdit:focus, QDoubleSpinBox:focus {
+    border: 1px solid #6a8cf5;
+}
+QTableWidget {
+    border: 1px solid #d7d7db;
+    border-radius: 6px;
+    background-color: #ffffff;
+    gridline-color: #e6e6ea;
+    alternate-background-color: #f7f7f9;
+}
+QHeaderView::section {
+    background-color: #eeeef1;
+    border: none;
+    border-bottom: 1px solid #d7d7db;
+    padding: 6px;
+    font-weight: 600;
+}
+QTabWidget::pane {
+    border: 1px solid #d7d7db;
+    border-radius: 8px;
+    top: -1px;
+    background-color: #fbfbfc;
+}
+QTabBar::tab {
+    background: #eeeef1;
+    border: 1px solid #d7d7db;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 6px 14px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background: #fbfbfc;
+    font-weight: 600;
+}
+QLabel {
+    color: #222;
+}
+"""
+# Note: QComboBox is deliberately left unstyled. Any QSS applied to it makes
+# Qt switch its popup from macOS's native rendering (which auto-sizes and
+# colors correctly) to Qt's own generic list popup, which has proven
+# unreliable here (truncated items, and on some Qt/macOS combinations,
+# invisible/mismatched text color in the popup) across several attempted
+# fixes. Native rendering has no such issues, so combo boxes are exempted.
+
+
+class ComboBox(QComboBox):
+    """Plain QComboBox alias.
+
+    Kept as a distinct class (rather than switching every call site back to
+    QComboBox) in case a future, better-tested styling approach is worth
+    revisiting — but for now it deliberately adds no behavior, so every
+    combo box in the app uses macOS's native popup as-is.
+    """
+    pass
+
 
 def make_spin(min_=-1e12, max_=1e12, decimals=4, value=0.0):
     """A QDoubleSpinBox with the wide-range settings used throughout the app."""
@@ -91,6 +201,38 @@ def make_figure_canvas(figsize):
     fig = Figure(figsize=figsize, tight_layout=True)
     ax = fig.add_subplot(111)
     return fig, ax, FigureCanvas(fig)
+
+
+def make_export_group(on_export, default_w=7.0, default_h=5.0):
+    """Compact 'Export figure' box: W/H/DPI spinboxes on one line, the
+    export button below — split across two rows (rather than one long row)
+    so it stays narrow enough to fit a narrow panel without needing extra
+    width. Returns (group_box, width_spin, height_spin, dpi_spin)."""
+    group = QGroupBox("Export figure")
+    layout = QVBoxLayout(group)
+
+    spin_row = QHBoxLayout()
+    width_spin = make_spin(min_=1, max_=40, decimals=2, value=default_w)
+    width_spin.setMaximumWidth(55)
+    height_spin = make_spin(min_=1, max_=40, decimals=2, value=default_h)
+    height_spin.setMaximumWidth(55)
+    dpi_spin = make_spin(min_=50, max_=1200, decimals=0, value=300)
+    dpi_spin.setMaximumWidth(55)
+
+    spin_row.addWidget(QLabel("W:"))
+    spin_row.addWidget(width_spin)
+    spin_row.addWidget(QLabel("H:"))
+    spin_row.addWidget(height_spin)
+    spin_row.addWidget(QLabel("DPI:"))
+    spin_row.addWidget(dpi_spin)
+    spin_row.addStretch()
+    layout.addLayout(spin_row)
+
+    export_btn = QPushButton("Export figure…")
+    export_btn.clicked.connect(on_export)
+    layout.addWidget(export_btn)
+
+    return group, width_spin, height_spin, dpi_spin
 
 
 # ----------------------------------------------------------------------
@@ -231,6 +373,7 @@ class EditDataPanel(QWidget):
 
         self.table = QTableWidget()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
         self._populate()
         layout.addWidget(self.table)
 
@@ -307,12 +450,12 @@ class BackgroundSubtractPanel(QWidget):
 
         form = QFormLayout()
 
-        self.mode_box = QComboBox()
+        self.mode_box = ComboBox()
         self.mode_box.addItems([self.MODE_CURVE, self.MODE_RANGE, self.MODE_CONSTANT])
         self.mode_box.currentTextChanged.connect(self._on_mode_changed)
         form.addRow("Method:", self.mode_box)
 
-        self.bg_curve_box = QComboBox()
+        self.bg_curve_box = ComboBox()
         eligible = [c for c in all_curves if c not in target_curves]
         for c in eligible:
             self.bg_curve_box.addItem(c.label, c)
@@ -397,7 +540,7 @@ class ScalePanel(QWidget):
 
         form = QFormLayout()
 
-        self.op_box = QComboBox()
+        self.op_box = ComboBox()
         self.op_box.addItems(["Divide by", "Multiply by"])
         form.addRow("Operation:", self.op_box)
 
@@ -419,6 +562,163 @@ class ScalePanel(QWidget):
             curve.df = curve.df.copy()
             curve.df[curve.y_col] = new_y
         self.on_change()
+
+
+class IntegratePanel(QWidget):
+    """Integrate (area under curve) over an X range, one or more curves at once."""
+
+    def __init__(self, target_curves, on_change, parent=None):
+        super().__init__(parent)
+        self.target_curves = target_curves
+        self.on_change = on_change
+        self.last_results = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Applying to {len(target_curves)} selected curve(s)."))
+
+        form = QFormLayout()
+
+        xs = [c.xy()[0] for c in target_curves if c.xy()[0].size]
+        if xs:
+            allx = np.concatenate(xs)
+            xmin_default, xmax_default = float(np.nanmin(allx)), float(np.nanmax(allx))
+        else:
+            xmin_default, xmax_default = 0.0, 1.0
+
+        self.xmin_spin = make_spin(decimals=4, value=xmin_default)
+        self.xmin_spin.valueChanged.connect(self._update_cursors)
+        form.addRow("X range min:", self.xmin_spin)
+
+        self.xmax_spin = make_spin(decimals=4, value=xmax_default)
+        self.xmax_spin.valueChanged.connect(self._update_cursors)
+        form.addRow("X range max:", self.xmax_spin)
+
+        self.method_box = ComboBox()
+        methods = ["Trapezoidal"]
+        if SCIPY_AVAILABLE:
+            methods.append("Simpson's rule")
+        self.method_box.addItems(methods)
+        form.addRow("Method:", self.method_box)
+
+        self.baseline_chk = QCheckBox("Subtract flat baseline (min Y in range) first")
+        form.addRow("", self.baseline_chk)
+
+        self.store_param_chk = QCheckBox("Store result in Param column")
+        form.addRow("", self.store_param_chk)
+
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Drag the red dashed lines to set the range, or type values above."))
+        self.fig, self.ax, self.preview_canvas = make_figure_canvas((6, 3.2))
+        layout.addWidget(self.preview_canvas)
+        self._dragging = None
+        self.min_line = self.max_line = self.span = None
+        self._plot_data()
+        self.preview_canvas.mpl_connect("button_press_event", self._on_press)
+        self.preview_canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self.preview_canvas.mpl_connect("button_release_event", self._on_release)
+
+        self.results_label = QLabel("Click Compute to see integrated values.")
+        self.results_label.setWordWrap(True)
+        self.results_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.results_label)
+        layout.addStretch()
+
+        copy_row = QHBoxLayout()
+        copy_btn = QPushButton("Copy results")
+        copy_btn.clicked.connect(self.copy_results)
+        copy_row.addWidget(copy_btn)
+        copy_row.addStretch()
+        layout.addLayout(copy_row)
+
+        add_apply_row(layout, self.compute, "Compute")
+
+    def _plot_data(self):
+        self.ax.clear()
+        for c in self.target_curves:
+            x, y = c.xy()
+            if x.size:
+                self.ax.plot(x, y, color=c.color, linewidth=1.2, label=c.label)
+        if len(self.target_curves) > 1:
+            self.ax.legend(fontsize=7)
+        xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
+        self.min_line = self.ax.axvline(xmin, color="red", linestyle="--", linewidth=1.5)
+        self.max_line = self.ax.axvline(xmax, color="red", linestyle="--", linewidth=1.5)
+        self.span = self.ax.axvspan(min(xmin, xmax), max(xmin, xmax), color="red", alpha=0.15)
+        self.preview_canvas.draw()
+
+    def _update_cursors(self):
+        if self.min_line is None:
+            return
+        xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
+        self.min_line.set_xdata([xmin, xmin])
+        self.max_line.set_xdata([xmax, xmax])
+        self.span.remove()
+        self.span = self.ax.axvspan(min(xmin, xmax), max(xmin, xmax), color="red", alpha=0.15)
+        self.preview_canvas.draw_idle()
+
+    def _on_press(self, event):
+        if event.inaxes != self.ax or event.xdata is None:
+            return
+        x0, x1 = self.ax.get_xlim()
+        tol = abs(x1 - x0) * 0.02
+        xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
+        if abs(event.xdata - xmin) <= tol:
+            self._dragging = "min"
+        elif abs(event.xdata - xmax) <= tol:
+            self._dragging = "max"
+
+    def _on_motion(self, event):
+        if self._dragging is None or event.inaxes != self.ax or event.xdata is None:
+            return
+        if self._dragging == "min":
+            self.xmin_spin.setValue(event.xdata)
+        else:
+            self.xmax_spin.setValue(event.xdata)
+
+    def _on_release(self, event):
+        self._dragging = None
+
+    def compute(self):
+        xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
+        if xmin > xmax:
+            xmin, xmax = xmax, xmin
+        method = self.method_box.currentText()
+
+        results = []
+        for c in self.target_curves:
+            x, y = c.xy()
+            mask = (x >= xmin) & (x <= xmax)
+            xs_, ys_ = x[mask], y[mask]
+            if xs_.size < 2:
+                results.append((c, float("nan")))
+                continue
+            order = np.argsort(xs_)
+            xs_, ys_ = xs_[order], ys_[order]
+            if self.baseline_chk.isChecked():
+                ys_ = ys_ - np.nanmin(ys_)
+            if method == "Simpson's rule" and SCIPY_AVAILABLE:
+                value = float(simpson(ys_, x=xs_))
+            else:
+                value = float(_trapezoid(ys_, x=xs_))
+            results.append((c, value))
+
+        self.last_results = results
+        lines = [f"{c.label}: {v:.6g}" for c, v in results] if results else ["No curves to integrate."]
+        self.results_label.setText("\n".join(lines))
+
+        if self.store_param_chk.isChecked() and results:
+            for c, v in results:
+                if not np.isnan(v):
+                    c.param = v
+            self.on_change()
+
+    def copy_results(self):
+        text = self.results_label.text()
+        if not text or text.startswith("Click Compute"):
+            QMessageBox.information(self, "No results yet", "Click Compute first.")
+            return
+        QApplication.clipboard().setText(text)
 
 
 # ----------------------------------------------------------------------
@@ -523,7 +823,7 @@ class GaussianFitPanel(QWidget):
         self.n_peaks_spin = make_spin(min_=1, max_=6, decimals=0, value=1)
         form.addRow("Number of peaks:", self.n_peaks_spin)
 
-        self.baseline_box = QComboBox()
+        self.baseline_box = ComboBox()
         self.baseline_box.addItems(["none", "constant", "linear"])
         self.baseline_box.setCurrentText("constant")
         form.addRow("Baseline:", self.baseline_box)
@@ -695,6 +995,8 @@ class CurveToolsDialog(QDialog):
         self.resize(680, 720)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         tabs = QTabWidget()
         layout.addWidget(tabs)
 
@@ -726,6 +1028,14 @@ class CurveToolsDialog(QDialog):
             tabs.addTab(self._placeholder(
                 "Select one or more curves in the table, then reopen Curve Tools."
             ), "Scale")
+
+        # --- Integrate (needs one or more curves) ---
+        if selected_curves:
+            tabs.addTab(IntegratePanel(selected_curves, main_window.update_plot), "Integrate")
+        else:
+            tabs.addTab(self._placeholder(
+                "Select one or more curves in the table, then reopen Curve Tools."
+            ), "Integrate")
 
         # --- Fit Gaussian (needs exactly one curve, and scipy) ---
         if not SCIPY_AVAILABLE:
@@ -763,6 +1073,386 @@ class CurveToolsDialog(QDialog):
         return w
 
 
+# ----------------------------------------------------------------------
+# Polar plot builder (manual angle/radius data entry)
+# ----------------------------------------------------------------------
+
+class PolarSeries:
+    """One manually-entered polar trace: parallel lists of raw text cells
+    (kept as strings so a still-being-typed/invalid row doesn't wipe data),
+    parsed to numeric theta/r only when plotting."""
+
+    def __init__(self, label):
+        self.label = label
+        self.angle_strs = []
+        self.radius_strs = []
+        self.unit = "Degrees"   # or "Radians"
+        self.visible = True
+        self.color = Curve._color_cycle[Curve._next_color_idx % len(Curve._color_cycle)]
+        Curve._next_color_idx += 1
+
+    def theta_r(self):
+        theta, r = [], []
+        for a, rad in zip(self.angle_strs, self.radius_strs):
+            try:
+                a_val, r_val = float(a), float(rad)
+            except (TypeError, ValueError):
+                continue
+            theta.append(a_val)
+            r.append(r_val)
+        theta = np.array(theta, dtype=float)
+        if self.unit == "Degrees":
+            theta = np.deg2rad(theta)
+        return theta, np.array(r, dtype=float)
+
+
+class PointsTable(QTableWidget):
+    """QTableWidget with Delete/Backspace wired to a row-removal callback."""
+
+    def __init__(self, on_delete_rows, parent=None):
+        super().__init__(parent)
+        self.on_delete_rows = on_delete_rows
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.on_delete_rows()
+        else:
+            super().keyPressEvent(event)
+
+
+class PolarCanvas(FigureCanvas):
+    def __init__(self):
+        self.fig = Figure(figsize=(6, 6), tight_layout=True)
+        self.ax = self.fig.add_subplot(111, projection="polar")
+        super().__init__(self.fig)
+
+    def redraw(self, series_list, theta_zero, theta_dir, r_max, show_grid,
+               show_legend, title, style):
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111, projection="polar")
+        self.ax.set_theta_zero_location(theta_zero)
+        self.ax.set_theta_direction(theta_dir)
+
+        marker = "o" if style in ("Markers", "Line + Markers") else None
+        linestyle = "-" if style in ("Line", "Line + Markers") else "None"
+
+        any_plotted = False
+        for s in series_list:
+            if not s.visible:
+                continue
+            theta, r = s.theta_r()
+            if theta.size == 0:
+                continue
+            any_plotted = True
+            self.ax.plot(theta, r, color=s.color, marker=marker, linestyle=linestyle,
+                         linewidth=1.4, markersize=4, label=s.label)
+
+        if r_max and r_max > 0:
+            self.ax.set_rmax(r_max)
+        self.ax.grid(show_grid)
+        if title:
+            self.ax.set_title(title)
+        if show_legend and any_plotted:
+            self.ax.legend(fontsize=8, loc="upper right", bbox_to_anchor=(1.3, 1.1))
+
+        self.draw()
+
+
+class PolarPlotDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Polar Plot Builder")
+        self.resize(1000, 650)
+        self.series = [PolarSeries("Series 1")]
+        self.current_index = 0
+
+        splitter = QSplitter(Qt.Horizontal)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.addWidget(splitter)
+
+        # ---------------- left: series + points ----------------
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+
+        series_row = QHBoxLayout()
+        self.series_box = ComboBox()
+        self.series_box.currentIndexChanged.connect(self._on_series_switch)
+        new_btn = QPushButton("New")
+        new_btn.clicked.connect(self._new_series)
+        remove_btn = QPushButton("Remove")
+        remove_btn.clicked.connect(self._remove_series)
+        series_row.addWidget(self.series_box)
+        series_row.addWidget(new_btn)
+        series_row.addWidget(remove_btn)
+        left_layout.addLayout(series_row)
+
+        form = QFormLayout()
+
+        self.label_edit = QLineEdit()
+        self.label_edit.textChanged.connect(self._on_label_changed)
+        form.addRow("Label:", self.label_edit)
+
+        self.unit_box = ComboBox()
+        self.unit_box.addItems(["Degrees", "Radians"])
+        self.unit_box.currentTextChanged.connect(self._on_unit_changed)
+        form.addRow("Angle unit:", self.unit_box)
+
+        self.visible_chk = QCheckBox("Visible")
+        self.visible_chk.setChecked(True)
+        self.visible_chk.toggled.connect(self._on_visible_changed)
+        form.addRow("", self.visible_chk)
+
+        self.color_btn = QPushButton()
+        self.color_btn.clicked.connect(self._pick_color)
+        form.addRow("Color:", self.color_btn)
+
+        left_layout.addLayout(form)
+
+        self.points_table = PointsTable(self._delete_selected_points)
+        self.points_table.setColumnCount(2)
+        self.points_table.setHorizontalHeaderLabels(["Angle", "Radius"])
+        self.points_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.points_table.setAlternatingRowColors(True)
+        self.points_table.itemChanged.connect(self._sync_from_table)
+        left_layout.addWidget(self.points_table)
+
+        pt_btn_row = QHBoxLayout()
+        add_pt_btn = QPushButton("Add point row")
+        add_pt_btn.clicked.connect(self._add_point_row)
+        del_pt_btn = QPushButton("Delete selected row(s)")
+        del_pt_btn.clicked.connect(self._delete_selected_points)
+        pt_btn_row.addWidget(add_pt_btn)
+        pt_btn_row.addWidget(del_pt_btn)
+        left_layout.addLayout(pt_btn_row)
+
+        splitter.addWidget(left)
+
+        # ---------------- right: preview + plot options ----------------
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+
+        self.canvas = PolarCanvas()
+        toolbar = NavigationToolbar(self.canvas, self)
+        right_layout.addWidget(toolbar)
+        right_layout.addWidget(self.canvas)
+
+        opts = QGroupBox("Plot options")
+        opts_form = QFormLayout(opts)
+
+        self.zero_box = ComboBox()
+        self.zero_box.addItems(["E", "N", "W", "S", "NE", "NW", "SE", "SW"])
+        self.zero_box.currentIndexChanged.connect(self._redraw)
+        opts_form.addRow("Theta zero location:", self.zero_box)
+
+        self.dir_box = ComboBox()
+        self.dir_box.addItems(["Counterclockwise", "Clockwise"])
+        self.dir_box.currentIndexChanged.connect(self._redraw)
+        opts_form.addRow("Theta direction:", self.dir_box)
+
+        self.style_box = ComboBox()
+        self.style_box.addItems(["Line", "Markers", "Line + Markers"])
+        self.style_box.currentIndexChanged.connect(self._redraw)
+        opts_form.addRow("Style:", self.style_box)
+
+        self.rmax_spin = make_spin(min_=0, max_=1e9, decimals=4, value=0.0)
+        self.rmax_spin.valueChanged.connect(self._redraw)
+        opts_form.addRow("Radial max (0 = auto):", self.rmax_spin)
+
+        self.grid_chk = QCheckBox("Show grid")
+        self.grid_chk.setChecked(True)
+        self.grid_chk.toggled.connect(self._redraw)
+        opts_form.addRow("", self.grid_chk)
+
+        self.legend_chk = QCheckBox("Show legend")
+        self.legend_chk.setChecked(True)
+        self.legend_chk.toggled.connect(self._redraw)
+        opts_form.addRow("", self.legend_chk)
+
+        self.title_edit = QLineEdit()
+        self.title_edit.textChanged.connect(self._redraw)
+        opts_form.addRow("Title:", self.title_edit)
+
+        right_layout.addWidget(opts)
+
+        export_group, self.fig_width_spin, self.fig_height_spin, self.fig_dpi_spin = \
+            make_export_group(self.export_figure, default_w=7.0, default_h=7.0)
+        right_layout.addWidget(export_group)
+
+        close_row = QHBoxLayout()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        close_row.addStretch()
+        close_row.addWidget(close_btn)
+        right_layout.addLayout(close_row)
+
+        splitter.addWidget(right)
+        splitter.setSizes([380, 620])
+
+        self._refresh_series_box()
+        self._load_series_into_form(0)
+        self._redraw()
+
+    # ------------------------------------------------------------------
+    # Series management
+    # ------------------------------------------------------------------
+
+    def _refresh_series_box(self):
+        self.series_box.blockSignals(True)
+        self.series_box.clear()
+        self.series_box.addItems([s.label for s in self.series])
+        self.series_box.setCurrentIndex(self.current_index)
+        self.series_box.blockSignals(False)
+
+    def _new_series(self):
+        self.series.append(PolarSeries(f"Series {len(self.series) + 1}"))
+        self.current_index = len(self.series) - 1
+        self._refresh_series_box()
+        self._load_series_into_form(self.current_index)
+        self._redraw()
+
+    def _remove_series(self):
+        if len(self.series) <= 1:
+            QMessageBox.information(self, "Can't remove", "At least one series is required.")
+            return
+        del self.series[self.current_index]
+        self.current_index = max(0, self.current_index - 1)
+        self._refresh_series_box()
+        self._load_series_into_form(self.current_index)
+        self._redraw()
+
+    def _on_series_switch(self, index):
+        if index < 0 or index == self.current_index:
+            return
+        self.current_index = index
+        self._load_series_into_form(index)
+        self._redraw()
+
+    def _load_series_into_form(self, index):
+        s = self.series[index]
+        self.label_edit.blockSignals(True)
+        self.label_edit.setText(s.label)
+        self.label_edit.blockSignals(False)
+
+        self.unit_box.blockSignals(True)
+        self.unit_box.setCurrentText(s.unit)
+        self.unit_box.blockSignals(False)
+
+        self.visible_chk.blockSignals(True)
+        self.visible_chk.setChecked(s.visible)
+        self.visible_chk.blockSignals(False)
+
+        self.color_btn.setStyleSheet(f"background-color: {s.color};")
+
+        self.points_table.blockSignals(True)
+        rows = max(len(s.angle_strs), 1)
+        self.points_table.setRowCount(rows)
+        for r in range(rows):
+            a = s.angle_strs[r] if r < len(s.angle_strs) else ""
+            rad = s.radius_strs[r] if r < len(s.radius_strs) else ""
+            self.points_table.setItem(r, 0, QTableWidgetItem(a))
+            self.points_table.setItem(r, 1, QTableWidgetItem(rad))
+        self.points_table.blockSignals(False)
+
+    def _current_series(self):
+        return self.series[self.current_index]
+
+    # ------------------------------------------------------------------
+    # Per-series field edits
+    # ------------------------------------------------------------------
+
+    def _on_label_changed(self, text):
+        s = self._current_series()
+        s.label = text
+        self.series_box.blockSignals(True)
+        self.series_box.setItemText(self.current_index, text)
+        self.series_box.blockSignals(False)
+        self._redraw()
+
+    def _on_unit_changed(self, text):
+        self._current_series().unit = text
+        self._redraw()
+
+    def _on_visible_changed(self, checked):
+        self._current_series().visible = checked
+        self._redraw()
+
+    def _pick_color(self):
+        s = self._current_series()
+        color = QColorDialog.getColor(QColor(s.color), self)
+        if color.isValid():
+            s.color = color.name()
+            self.color_btn.setStyleSheet(f"background-color: {s.color};")
+            self._redraw()
+
+    # ------------------------------------------------------------------
+    # Points table
+    # ------------------------------------------------------------------
+
+    def _add_point_row(self):
+        row = self.points_table.rowCount()
+        self.points_table.insertRow(row)
+        self.points_table.blockSignals(True)
+        self.points_table.setItem(row, 0, QTableWidgetItem(""))
+        self.points_table.setItem(row, 1, QTableWidgetItem(""))
+        self.points_table.blockSignals(False)
+        self._sync_from_table()
+
+    def _delete_selected_points(self):
+        rows = selected_table_rows(self.points_table, reverse=True)
+        if not rows:
+            return
+        for r in rows:
+            self.points_table.removeRow(r)
+        self._sync_from_table()
+
+    def _sync_from_table(self):
+        s = self._current_series()
+        angle_strs, radius_strs = [], []
+        for row in range(self.points_table.rowCount()):
+            a_item = self.points_table.item(row, 0)
+            r_item = self.points_table.item(row, 1)
+            angle_strs.append(a_item.text() if a_item else "")
+            radius_strs.append(r_item.text() if r_item else "")
+        s.angle_strs = angle_strs
+        s.radius_strs = radius_strs
+        self._redraw()
+
+    # ------------------------------------------------------------------
+    # Preview
+    # ------------------------------------------------------------------
+
+    def _redraw(self):
+        theta_dir = 1 if self.dir_box.currentText() == "Counterclockwise" else -1
+        self.canvas.redraw(
+            series_list=self.series,
+            theta_zero=self.zero_box.currentText(),
+            theta_dir=theta_dir,
+            r_max=self.rmax_spin.value(),
+            show_grid=self.grid_chk.isChecked(),
+            show_legend=self.legend_chk.isChecked(),
+            title=self.title_edit.text(),
+            style=self.style_box.currentText(),
+        )
+
+    def export_figure(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export figure", "polar_plot.png",
+            "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)"
+        )
+        if not path:
+            return
+        original_size = self.canvas.fig.get_size_inches()
+        self.canvas.fig.set_size_inches(self.fig_width_spin.value(), self.fig_height_spin.value())
+        try:
+            self.canvas.fig.savefig(path, dpi=int(self.fig_dpi_spin.value()))
+        finally:
+            self.canvas.fig.set_size_inches(original_size)
+            self.canvas.draw()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -777,8 +1467,11 @@ class MainWindow(QMainWindow):
         # ---------------- left: file table + controls ----------------
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(12, 12, 12, 12)
 
         btn_row = QHBoxLayout()
+        btn_row2 = QHBoxLayout()
         load_btn = QPushButton("Load…")
         load_btn.clicked.connect(self.load_files)
         tooltip_bits = []
@@ -794,16 +1487,32 @@ class MainWindow(QMainWindow):
         remove_btn.clicked.connect(self.remove_selected)
         export_csv_btn = QPushButton("Export selected as CSV…")
         export_csv_btn.clicked.connect(self.export_selected_as_csv)
+        polar_btn = QPushButton("Polar Plot…")
+        polar_btn.clicked.connect(self.open_polar_plot)
         btn_row.addWidget(load_btn)
         btn_row.addWidget(tools_btn)
         btn_row.addWidget(remove_btn)
-        btn_row.addWidget(export_csv_btn)
+        btn_row2.addWidget(export_csv_btn)
+        btn_row2.addWidget(polar_btn)
+        btn_row2.addStretch()
         left_layout.addLayout(btn_row)
+        left_layout.addLayout(btn_row2)
 
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        # Fixed, compact widths for every column except the last (Color),
+        # which absorbs any extra space — keeps the table narrow enough to
+        # avoid horizontal scrolling without relying on Qt's flakier
+        # Stretch+Fixed mixing behavior.
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        for col, width in [(0, 65), (1, 65), (2, 55), (3, 55), (4, 50), (5, 50)]:
+            self.table.setColumnWidth(col, width)
+        header.setMinimumSectionSize(30)
+        header.setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.itemChanged.connect(self.on_table_item_changed)
         left_layout.addWidget(self.table)
 
@@ -811,7 +1520,7 @@ class MainWindow(QMainWindow):
         opts = QGroupBox("Plot options")
         form = QFormLayout(opts)
 
-        self.mode_box = QComboBox()
+        self.mode_box = ComboBox()
         self.mode_box.addItems(["Overlay", "Waterfall", "Power dependence"])
         self.mode_box.currentIndexChanged.connect(self.update_plot)
         form.addRow("Mode:", self.mode_box)
@@ -820,7 +1529,7 @@ class MainWindow(QMainWindow):
         self.offset_spin.valueChanged.connect(self.update_plot)
         form.addRow("Waterfall offset:", self.offset_spin)
 
-        self.cmap_box = QComboBox()
+        self.cmap_box = ComboBox()
         self.cmap_box.addItems(["None", "viridis", "plasma", "inferno",
                                  "magma", "cividis", "turbo", "coolwarm"])
         self.cmap_box.currentIndexChanged.connect(self.update_plot)
@@ -844,7 +1553,7 @@ class MainWindow(QMainWindow):
         self.legend_chk.stateChanged.connect(self.update_plot)
         form.addRow("", self.legend_chk)
 
-        self.legend_loc_box = QComboBox()
+        self.legend_loc_box = ComboBox()
         self.legend_loc_box.addItems([
             "best", "upper right", "upper left", "lower left", "lower right",
             "center left", "center right", "lower center", "upper center",
@@ -884,36 +1593,28 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(opts)
 
-        export_group = QGroupBox("Export figure")
-        export_form = QFormLayout(export_group)
-
-        self.fig_width_spin = make_spin(min_=1, max_=40, decimals=2, value=7.0)
-        export_form.addRow("Width (in):", self.fig_width_spin)
-
-        self.fig_height_spin = make_spin(min_=1, max_=40, decimals=2, value=5.0)
-        export_form.addRow("Height (in):", self.fig_height_spin)
-
-        self.fig_dpi_spin = make_spin(min_=50, max_=1200, decimals=0, value=300)
-        export_form.addRow("DPI:", self.fig_dpi_spin)
-
-        export_btn = QPushButton("Export figure…")
-        export_btn.clicked.connect(self.export_figure)
-        export_form.addRow(export_btn)
-
+        export_group, self.fig_width_spin, self.fig_height_spin, self.fig_dpi_spin = \
+            make_export_group(self.export_figure, default_w=7.0, default_h=5.0)
         left_layout.addWidget(export_group)
 
-        splitter.addWidget(left)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left)
+        left_scroll.setFrameShape(QScrollArea.NoFrame)
+        splitter.addWidget(left_scroll)
 
         # ---------------- right: plot ----------------
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(8)
         self.canvas = PlotCanvas()
         toolbar = NavigationToolbar(self.canvas, self)
         right_layout.addWidget(toolbar)
         right_layout.addWidget(self.canvas)
         splitter.addWidget(right)
 
-        splitter.setSizes([480, 820])
+        splitter.setSizes([420, 880])
 
     # ------------------------------------------------------------------
     # File loading
@@ -1046,6 +1747,10 @@ class MainWindow(QMainWindow):
         self.refresh_table()
         self.update_plot()
 
+    def open_polar_plot(self):
+        dialog = PolarPlotDialog(self)
+        dialog.exec()
+
     def export_selected_as_csv(self):
         selected = self._selected_curves()
         if not selected:
@@ -1107,10 +1812,7 @@ class MainWindow(QMainWindow):
             param_item = QTableWidgetItem(str(c.param))
             self.table.setItem(row, 4, param_item)
 
-            vis_item = QTableWidgetItem()
-            vis_item.setFlags(vis_item.flags() | Qt.ItemIsUserCheckable)
-            vis_item.setCheckState(Qt.Checked if c.visible else Qt.Unchecked)
-            self.table.setItem(row, 5, vis_item)
+            self.table.setCellWidget(row, 5, self._make_visible_checkbox(c))
 
             color_btn = QPushButton()
             color_btn.setStyleSheet(f"background-color: {c.color};")
@@ -1119,11 +1821,31 @@ class MainWindow(QMainWindow):
 
         self.table.blockSignals(False)
 
+    def _make_visible_checkbox(self, curve):
+        checkbox = QCheckBox()
+        checkbox.setChecked(curve.visible)
+        checkbox.toggled.connect(lambda checked, c=curve: self._set_visible(c, checked))
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.addWidget(checkbox)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(0, 0, 0, 0)
+        return container
+
+    def _set_visible(self, curve, checked):
+        curve.visible = checked
+        self.update_plot()
+
     def _make_col_combo(self, curve, attr):
-        combo = QComboBox()
+        combo = ComboBox()
         combo.addItems([str(col) for col in curve.df.columns])
         combo.setCurrentText(str(getattr(curve, attr)))
         combo.currentTextChanged.connect(lambda text: self._set_col(curve, attr, text))
+        # Without this, the combo sizes itself to its longest possible item
+        # (e.g. "Wavelength (nm)"), forcing this column — and the whole
+        # table — wider than necessary and triggering horizontal scrolling.
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(4)
         return combo
 
     @staticmethod
@@ -1156,8 +1878,6 @@ class MainWindow(QMainWindow):
             except ValueError:
                 item.setText(str(c.param))
                 return
-        elif col == 5:
-            c.visible = item.checkState() == Qt.Checked
         self.update_plot()
 
     # ------------------------------------------------------------------
@@ -1207,6 +1927,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setStyleSheet(APP_STYLESHEET)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
