@@ -884,9 +884,23 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(opts)
 
+        export_group = QGroupBox("Export figure")
+        export_form = QFormLayout(export_group)
+
+        self.fig_width_spin = make_spin(min_=1, max_=40, decimals=2, value=7.0)
+        export_form.addRow("Width (in):", self.fig_width_spin)
+
+        self.fig_height_spin = make_spin(min_=1, max_=40, decimals=2, value=5.0)
+        export_form.addRow("Height (in):", self.fig_height_spin)
+
+        self.fig_dpi_spin = make_spin(min_=50, max_=1200, decimals=0, value=300)
+        export_form.addRow("DPI:", self.fig_dpi_spin)
+
         export_btn = QPushButton("Export figure…")
         export_btn.clicked.connect(self.export_figure)
-        left_layout.addWidget(export_btn)
+        export_form.addRow(export_btn)
+
+        left_layout.addWidget(export_group)
 
         splitter.addWidget(left)
 
@@ -1180,8 +1194,15 @@ class MainWindow(QMainWindow):
             self, "Export figure", "plot.png",
             "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)"
         )
-        if path:
-            self.canvas.fig.savefig(path, dpi=300)
+        if not path:
+            return
+        original_size = self.canvas.fig.get_size_inches()
+        self.canvas.fig.set_size_inches(self.fig_width_spin.value(), self.fig_height_spin.value())
+        try:
+            self.canvas.fig.savefig(path, dpi=int(self.fig_dpi_spin.value()))
+        finally:
+            self.canvas.fig.set_size_inches(original_size)
+            self.canvas.draw()
 
 
 def main():
