@@ -39,8 +39,8 @@ GROUP_TOL = 12.0        # peaks within this many meV of each other = same peak
 MIN_PRESENCE = 1.0     # 1.0 = must appear at every angle; 0.8 = 80 % of them
 
 POLARIZATIONS = ("H", "V")          # which series to draw
-LABELS = {"H": "H/(H+V)", "V": "V/(H+V)"}  # used in "fraction" mode
-RAW_LABELS = {"H": "H (horizontal)", "V": "V (vertical)"}
+LABELS = {"H": "H", "V": "V"}          # legend text in "fraction" mode
+RAW_LABELS = {"H": "H", "V": "V"}      # legend text in "area"/"max" modes
 COLORS = {"H": "blue", "V": "red"}
 MARKERS = {"H": "s", "V": "p"}      # square, pentagon (as in your example)
 
