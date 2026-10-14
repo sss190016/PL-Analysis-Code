@@ -42,9 +42,3 @@ coll = COLLECT(
     upx_exclude=[],
     name='csv_plotter',
 )
-app = BUNDLE(
-    coll,
-    name='csv_plotter.app',
-    icon=None,
-    bundle_identifier=None,
-)

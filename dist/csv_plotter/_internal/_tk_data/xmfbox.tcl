@@ -4,8 +4,8 @@
 #	Unix platform. This implementation is used only if the
 #	"::tk_strictMotif" flag is set.
 #
-# Copyright © 1996 Sun Microsystems, Inc.
-# Copyright © 1998-2000 Scriptics Corporation
+# Copyright (c) 1996 Sun Microsystems, Inc.
+# Copyright (c) 1998-2000 Scriptics Corporation
 #
 # See the file "license.terms" for information on usage and redistribution
 # of this file, and for a DISCLAIMER OF ALL WARRANTIES.
@@ -210,6 +210,7 @@ proc ::tk::MotifFDialog_SetFilter {w type} {
     variable ::tk::Priv
 
     set data(filter) [lindex $type 1]
+    set Priv(selectFileType) [lindex [lindex $type 0] 0]
 
     MotifFDialog_Update $w
 }
@@ -315,10 +316,10 @@ proc ::tk::MotifFDialog_Config {dataName type argList} {
 #	Builds the UI components of the Motif file dialog.
 #
 # Arguments:
-#	w		Pathname of the dialog to build.
+# 	w		Pathname of the dialog to build.
 #
 # Results:
-#	None.
+# 	None.
 
 proc ::tk::MotifFDialog_BuildUI {w} {
     set dataName [lindex [split $w .] end]
@@ -344,9 +345,9 @@ proc ::tk::MotifFDialog_BuildUI {w} {
     set f2a [frame $f2.a]
     set f2b [frame $f2.b]
 
-    grid $f2a -row 0 -column 0 -rowspan 1 -columnspan 1 -padx 3p -pady 3p \
+    grid $f2a -row 0 -column 0 -rowspan 1 -columnspan 1 -padx 4 -pady 4 \
 	-sticky news
-    grid $f2b -row 0 -column 1 -rowspan 1 -columnspan 1 -padx 3p -pady 3p \
+    grid $f2b -row 0 -column 1 -rowspan 1 -columnspan 1 -padx 4 -pady 4 \
 	-sticky news
     grid rowconfigure $f2 0    -minsize 0   -weight 1
     grid columnconfigure $f2 0 -minsize 0   -weight 1
@@ -357,8 +358,8 @@ proc ::tk::MotifFDialog_BuildUI {w} {
     bind [::tk::AmpWidget label $f1.lab -text [mc "Fil&ter:"] -anchor w] \
 	<<AltUnderlined>> [list focus $f1.ent]
     entry $f1.ent
-    pack $f1.lab -side top -fill x -padx 4.5p -pady 3p
-    pack $f1.ent -side top -fill x -padx 3p -pady 0
+    pack $f1.lab -side top -fill x -padx 6 -pady 4
+    pack $f1.ent -side top -fill x -padx 4 -pady 0
     set data(fEnt) $f1.ent
 
     # The file and directory lists
@@ -373,8 +374,8 @@ proc ::tk::MotifFDialog_BuildUI {w} {
     bind [::tk::AmpWidget label $f3.lab -text [mc "&Selection:"] -anchor w] \
 	<<AltUnderlined>> [list focus $f3.ent]
     entry $f3.ent
-    pack $f3.lab -side top -fill x -padx 4.5p -pady 0
-    pack $f3.ent -side top -fill x -padx 3p -pady 3p
+    pack $f3.lab -side top -fill x -padx 6 -pady 0
+    pack $f3.ent -side top -fill x -padx 4 -pady 4
     set data(sEnt) $f3.ent
 
     # The buttons
@@ -391,7 +392,7 @@ proc ::tk::MotifFDialog_BuildUI {w} {
 	    -width $maxWidth \
 	    -command [list tk::MotifFDialog_CancelCmd $w]]
 
-    pack $bot.ok $bot.filter $bot.cancel -padx 7.5p -pady 7.5p -expand yes \
+    pack $bot.ok $bot.filter $bot.cancel -padx 10 -pady 10 -expand yes \
 	-side left
 
     # Create the bindings:
@@ -441,7 +442,7 @@ proc ::tk::MotifFDialog_MakeSList {w f label cmdPrefix} {
     scrollbar $f.v -orient vertical   -takefocus 0 -command [list $f.l yview]
     scrollbar $f.h -orient horizontal -takefocus 0 -command [list $f.l xview]
     grid $f.lab -row 0 -column 0 -sticky news -rowspan 1 -columnspan 2 \
-	-padx 1.5p -pady 1.5p
+	-padx 2 -pady 2
     grid $f.l -row 1 -column 0 -rowspan 1 -columnspan 1 -sticky news
     grid $f.v -row 1 -column 1 -rowspan 1 -columnspan 1 -sticky news
     grid $f.h -row 2 -column 0 -rowspan 1 -columnspan 1 -sticky news
@@ -476,9 +477,9 @@ proc ::tk::MotifFDialog_MakeSList {w f label cmdPrefix} {
 #	w		pathname of the dialog box.
 #
 # Results:
-#	A list of two elements. The first element is the directory
-#	specified # by the filter. The second element is the filter
-#	pattern itself.
+# 	A list of two elements. The first element is the directory
+# 	specified # by the filter. The second element is the filter
+# 	pattern itself.
 
 proc ::tk::MotifFDialog_InterpFilter {w} {
     upvar ::tk::dialog::file::[winfo name $w] data
@@ -538,7 +539,7 @@ proc ::tk::MotifFDialog_InterpFilter {w} {
 #	boxes.
 #
 # Arguments:
-#	w		pathname of the dialog box.
+# 	w 		pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -562,7 +563,7 @@ proc ::tk::MotifFDialog_Update {w} {
 #	to the filter setting.
 #
 # Arguments:
-#	w		pathname of the dialog box.
+# 	w 		pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -623,7 +624,7 @@ proc ::tk::MotifFDialog_LoadFiles {w} {
 #	(clicked-over) by the user.
 #
 # Arguments:
-#	w		The pathname of the dialog box.
+# 	w		The pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -669,7 +670,7 @@ proc ::tk::MotifFDialog_BrowseDList {w} {
 #	(double-clicked) by the user.
 #
 # Arguments:
-#	w		The pathname of the dialog box.
+# 	w		The pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -717,7 +718,7 @@ proc ::tk::MotifFDialog_ActivateDList {w} {
 #	(clicked-over) by the user.
 #
 # Arguments:
-#	w		The pathname of the dialog box.
+# 	w		The pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -759,7 +760,7 @@ proc ::tk::MotifFDialog_BrowseFList {w} {
 #	(double-clicked) by the user.
 #
 # Arguments:
-#	w		The pathname of the dialog box.
+# 	w		The pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -785,7 +786,7 @@ proc ::tk::MotifFDialog_ActivateFList {w} {
 #	text inside the filter entry.
 #
 # Arguments:
-#	w		The pathname of the dialog box.
+# 	w		The pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -808,7 +809,7 @@ proc ::tk::MotifFDialog_ActivateFEnt {w} {
 #	terminated.
 #
 # Arguments:
-#	w		The pathname of the dialog box.
+# 	w		The pathname of the dialog box.
 #
 # Results:
 #	None.
@@ -906,9 +907,9 @@ proc ::tk::MotifFDialog_CancelCmd {w} {
 }
 
 proc ::tk::ListBoxKeyAccel_Set {w} {
-    bind Listbox <Key> ""
+    bind Listbox <Any-Key> ""
     bind $w <Destroy> [list tk::ListBoxKeyAccel_Unset $w]
-    bind $w <Key> [list tk::ListBoxKeyAccel_Key $w %A]
+    bind $w <Any-Key> [list tk::ListBoxKeyAccel_Key $w %A]
 }
 
 proc ::tk::ListBoxKeyAccel_Unset {w} {
@@ -926,7 +927,7 @@ proc ::tk::ListBoxKeyAccel_Unset {w} {
 #	keystrokes.
 #
 # Arguments:
-#	w		The pathname of the listbox.
+# 	w		The pathname of the listbox.
 #	key		The key which the user just pressed.
 #
 # Results:
@@ -978,5 +979,11 @@ proc ::tk::ListBoxKeyAccel_Reset {w} {
     variable ::tk::Priv
 
     unset -nocomplain Priv(lbAccel,$w)
+}
+
+proc ::tk_getFileType {} {
+    variable ::tk::Priv
+
+    return $Priv(selectFileType)
 }
 

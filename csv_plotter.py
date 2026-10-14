@@ -213,11 +213,11 @@ def make_export_group(on_export, default_w=7.0, default_h=5.0):
 
     spin_row = QHBoxLayout()
     width_spin = make_spin(min_=1, max_=40, decimals=2, value=default_w)
-    width_spin.setMaximumWidth(55)
+    width_spin.setMaximumWidth(150)
     height_spin = make_spin(min_=1, max_=40, decimals=2, value=default_h)
-    height_spin.setMaximumWidth(55)
+    height_spin.setMaximumWidth(150)
     dpi_spin = make_spin(min_=50, max_=1200, decimals=0, value=300)
-    dpi_spin.setMaximumWidth(55)
+    dpi_spin.setMaximumWidth(150)
 
     spin_row.addWidget(QLabel("W:"))
     spin_row.addWidget(width_spin)

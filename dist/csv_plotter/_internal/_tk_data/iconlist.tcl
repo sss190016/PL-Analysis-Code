@@ -3,8 +3,8 @@
 #	Implements the icon-list megawidget used in the "Tk" standard file
 #	selection dialog boxes.
 #
-# Copyright © 1994-1998 Sun Microsystems, Inc.
-# Copyright © 2009 Donal K. Fellows
+# Copyright (c) 1994-1998 Sun Microsystems, Inc.
+# Copyright (c) 2009 Donal K. Fellows
 #
 # See the file "license.terms" for information on usage and redistribution of
 # this file, and for a DISCLAIMER OF ALL WARRANTIES.
@@ -26,7 +26,7 @@
 #	<path> selection includes <item>
 #	<path> selection set <first> ?<last>?
 
-package require tk
+package require Tk
 
 ::tk::Megawidget create ::tk::IconList ::tk::FocusableWidget {
     variable w canvas sbar accel accelCB fill font index \
@@ -377,7 +377,7 @@ package require tk
 
     method DrawSelection {} {
 	$canvas delete selection
-	$canvas itemconfigure selectionText -fill $fill
+	$canvas itemconfigure selectionText -fill black
 	$canvas dtag selectionText
 	set cbg [ttk::style lookup TEntry -selectbackground focus]
 	set cfg [ttk::style lookup TEntry -selectforeground focus]
@@ -405,10 +405,9 @@ package require tk
 	set sbar [ttk::scrollbar $hull.sbar -orient horizontal -takefocus 0]
 	catch {$sbar configure -highlightthickness 0}
 	set canvas [canvas $hull.canvas -highlightthick 0 -takefocus 1 \
-			-width 300p -height 90p \
-			-background [ttk::style lookup Treeview -background {} white]]
-	pack $sbar -side bottom -fill x -padx 1.5p -pady {0 1.5p}
-	pack $canvas -expand yes -fill both -padx 1.5p -pady {1.5p 0}
+			-width 400 -height 120 -background white]
+	pack $sbar -side bottom -fill x -padx 2 -pady {0 2}
+	pack $canvas -expand yes -fill both -padx 2 -pady {2 0}
 
 	$sbar configure -command [list $canvas xview]
 	$canvas configure -xscrollcommand [list $sbar set]
@@ -423,7 +422,12 @@ package require tk
 	set noScroll 1
 	set selection {}
 	set index(anchor) ""
-	set fill [ttk::style lookup Treeview -foreground {} black]
+	set fg [option get $canvas foreground Foreground]
+	if {$fg eq ""} {
+	    set fill black
+	} else {
+	    set fill $fg
+	}
 
 	# Creates the event bindings.
 	#
@@ -442,9 +446,18 @@ package require tk
 	bind $canvas <Control-B1-Motion> {;}
 	bind $canvas <Shift-B1-Motion>	[namespace code {my ShiftMotion1 %x %y}]
 
-	bind $canvas <Shift-MouseWheel>	[namespace code {my MouseWheel %D}]
-	bind $canvas <Option-Shift-MouseWheel>	[namespace code {my MouseWheel %D -12}]
-
+	if {[tk windowingsystem] eq "aqua"} {
+	    bind $canvas <Shift-MouseWheel>	[namespace code {my MouseWheel [expr {40 * (%D)}]}]
+	    bind $canvas <Option-Shift-MouseWheel>	[namespace code {my MouseWheel [expr {400 * (%D)}]}]
+	    bind $canvas <Command-Key> 	{# nothing}
+	    bind $canvas <Mod4-Key>	{# nothing}
+	} else {
+	    bind $canvas <Shift-MouseWheel>	[namespace code {my MouseWheel %D}]
+	}
+	if {[tk windowingsystem] eq "x11"} {
+	    bind $canvas <Shift-Button-4>	[namespace code {my MouseWheel 120}]
+	    bind $canvas <Shift-Button-5>	[namespace code {my MouseWheel -120}]
+	}
 
 	bind $canvas <<PrevLine>>	[namespace code {my UpDown -1}]
 	bind $canvas <<NextLine>>	[namespace code {my UpDown  1}]
@@ -453,10 +466,8 @@ package require tk
 	bind $canvas <Return>		[namespace code {my ReturnKey}]
 	bind $canvas <Key>		[namespace code {my KeyPress %A}]
 	bind $canvas <Alt-Key>		{# nothing}
-	bind $canvas <Meta-Key>		{# nothing}
-	bind $canvas <Control-Key>	{# nothing}
-	bind $canvas <Command-Key>	{# nothing}
-	bind $canvas <Fn-Key>		{# nothing}
+	bind $canvas <Meta-Key> 	{# nothing}
+	bind $canvas <Control-Key> 	{# nothing}
 
 	bind $canvas <FocusIn>		[namespace code {my FocusIn}]
 	bind $canvas <FocusOut>		[namespace code {my FocusOut}]
@@ -495,11 +506,15 @@ package require tk
     # ----------------------------------------------------------------------
 
     # Event handlers
-    method MouseWheel {amount {factor -120.0}} {
+    method MouseWheel {amount} {
 	if {$noScroll || $::tk_strictMotif} {
 	    return
 	}
-	$canvas xview scroll [expr {$amount/$factor}] units
+	if {$amount > 0} {
+	    $canvas xview scroll [expr {(-119-$amount) / 120}] units
+	} else {
+	    $canvas xview scroll [expr {-($amount / 120)}] units
+	}
     }
     method Btn1 {x y} {
 	focus $canvas

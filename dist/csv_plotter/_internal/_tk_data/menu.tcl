@@ -4,10 +4,10 @@
 # It also implements keyboard traversal of menus and implements a few
 # other utility procedures related to menus.
 #
-# Copyright © 1992-1994 The Regents of the University of California.
-# Copyright © 1994-1997 Sun Microsystems, Inc.
-# Copyright © 1998-1999 Scriptics Corporation.
-# Copyright © 2007 Daniel A. Steffen <das@users.sourceforge.net>
+# Copyright (c) 1992-1994 The Regents of the University of California.
+# Copyright (c) 1994-1997 Sun Microsystems, Inc.
+# Copyright (c) 1998-1999 Scriptics Corporation.
+# Copyright (c) 2007 Daniel A. Steffen <das@users.sourceforge.net>
 #
 # See the file "license.terms" for information on usage and redistribution
 # of this file, and for a DISCLAIMER OF ALL WARRANTIES.
@@ -88,7 +88,7 @@ bind Menubutton <Enter> {
 bind Menubutton <Leave> {
     tk::MbLeave %W
 }
-bind Menubutton <Button-1> {
+bind Menubutton <1> {
     if {$tk::Priv(inMenubutton) ne ""} {
 	tk::MbPost $tk::Priv(inMenubutton) %X %Y
     }
@@ -281,7 +281,7 @@ proc ::tk::MbPost {w {x {}} {y {}}} {
 
     set Priv(postedMb) $w
     set Priv(focus) [focus]
-    $menu activate {}
+    $menu activate none
     GenerateMenuSelect $menu
     update idletasks
 
@@ -364,8 +364,8 @@ proc ::tk::MenuUnpost menu {
 		if {[winfo class $parent] ne "Menu" || ![winfo ismapped $parent]} {
 		    break
 		}
-		$parent activate {}
-		$parent postcascade {}
+		$parent activate none
+		$parent postcascade none
 		GenerateMenuSelect $parent
 		set type [$parent cget -type]
 		if {$type eq "menubar" || $type eq "tearoff"} {
@@ -408,7 +408,7 @@ proc ::tk::MenuUnpost menu {
 #
 # Arguments:
 # w -			The name of the menubutton widget.
-# upDown -		"down" means button 1 is pressed, "up" means
+# upDown - 		"down" means button 1 is pressed, "up" means
 #			it isn't.
 # rootx, rooty -	Coordinates of mouse, in (virtual?) root window.
 
@@ -475,7 +475,7 @@ proc ::tk::MbButtonUp w {
 proc ::tk::MenuMotion {menu x y state} {
     variable ::tk::Priv
     if {$menu eq $Priv(window)} {
-	set activeindex [$menu index active]
+	set active [$menu index active]
 	if {[$menu cget -type] eq "menubar"} {
 	    if {[info exists Priv(focus)] && $menu ne $Priv(focus)} {
 		$menu activate @$x,$y
@@ -487,8 +487,8 @@ proc ::tk::MenuMotion {menu x y state} {
 	}
 	set index [$menu index @$x,$y]
 	if {[info exists Priv(menuActivated)] \
-		&& $index >= 0 \
-		&& $index ne $activeindex} {
+		&& $index ne "none" \
+		&& $index ne $active} {
 	    set mode [option get $menu clickToFocus ClickToFocus]
 	    if {[string is false $mode]} {
 		set delay [expr {[$menu cget -type] eq "menubar" ? 0 : 50}]
@@ -496,12 +496,10 @@ proc ::tk::MenuMotion {menu x y state} {
 		    # Catch these postcascade commands since the menu could be
 		    # destroyed before they run.
 		    set Priv(menuActivatedTimer) \
-			[after $delay [list catch [list \
-			    $menu postcascade active]]]
+			[after $delay "catch {$menu postcascade active}"]
 		} else {
 		    set Priv(menuDeactivatedTimer) \
-			[after $delay [list catch [list
-			    $menu postcascade {}]]]
+			[after $delay "catch {$menu postcascade none}"]
 		}
 	    }
 	}
@@ -529,7 +527,7 @@ proc ::tk::MenuButtonDown menu {
     if {![winfo viewable $menu]} {
 	return
     }
-    if {[$menu index active] < 0} {
+    if {[$menu index active] eq "none"} {
 	if {[$menu cget -type] ne "menubar" } {
 	    set Priv(window) {}
 	}
@@ -587,7 +585,7 @@ proc ::tk::MenuButtonDown menu {
 proc ::tk::MenuLeave {menu rootx rooty state} {
     variable ::tk::Priv
     set Priv(window) {}
-    if {[$menu index active] < 0} {
+    if {[$menu index active] eq "none"} {
 	return
     }
     if {[$menu type active] eq "cascade" \
@@ -595,7 +593,7 @@ proc ::tk::MenuLeave {menu rootx rooty state} {
 		[$menu entrycget active -menu]} {
 	return
     }
-    $menu activate {}
+    $menu activate none
     GenerateMenuSelect $menu
 }
 
@@ -617,8 +615,8 @@ proc ::tk::MenuInvoke {w buttonRelease} {
 	# dragged off the menu (possibly with a cascade posted) and
 	# released.  Unpost everything and quit.
 
-	$w postcascade {}
-	$w activate {}
+	$w postcascade none
+	$w activate none
 	event generate $w <<MenuSelect>>
 	MenuUnpost $w
 	return
@@ -631,16 +629,16 @@ proc ::tk::MenuInvoke {w buttonRelease} {
 	::tk::TearOffMenu $w
 	MenuUnpost $w
     } elseif {[$w cget -type] eq "menubar"} {
-	$w postcascade {}
-	set activeindex [$w index active]
-	set isCascade [string equal [$w type $activeindex] "cascade"]
+	$w postcascade none
+	set active [$w index active]
+	set isCascade [string equal [$w type $active] "cascade"]
 
 	# Only de-activate the active item if it's a cascade; this prevents
 	# the annoying "activation flicker" you otherwise get with
 	# checkbuttons/commands/etc. on menubars
 
 	if { $isCascade } {
-	    $w activate {}
+	    $w activate none
 	    event generate $w <<MenuSelect>>
 	}
 
@@ -651,10 +649,11 @@ proc ::tk::MenuInvoke {w buttonRelease} {
 	# but not recommended)
 
 	if { !$isCascade } {
-	    uplevel #0 [list $w invoke $activeindex]
+	    uplevel #0 [list $w invoke $active]
 	}
     } else {
-	if {$Priv(popup) eq "" || [$w index active] >= 0} {
+	set active [$w index active]
+	if {$Priv(popup) eq "" || $active ne "none"} {
 	    MenuUnpost $w
 	}
 	uplevel #0 [list $w invoke active]
@@ -758,11 +757,11 @@ proc ::tk::MenuNextMenu {menu direction} {
 	set count -1
 	set m2 [winfo parent $menu]
 	if {[winfo class $m2] eq "Menu"} {
-	    $menu activate {}
+	    $menu activate none
 	    GenerateMenuSelect $menu
 	    tk_menuSetFocus $m2
 
-	    $m2 postcascade {}
+	    $m2 postcascade none
 
 	    if {[$m2 cget -type] ne "menubar"} {
 		return
@@ -798,7 +797,7 @@ proc ::tk::MenuNextMenu {menu direction} {
 	if {[winfo class $mb] eq "Menubutton" \
 		&& [$mb cget -state] ne "disabled" \
 		&& [$mb cget -menu] ne "" \
-		&& [[$mb cget -menu] index last] >= 0} {
+		&& [[$mb cget -menu] index last] ne "none"} {
 	    break
 	}
 	if {$mb eq $w} {
@@ -820,17 +819,16 @@ proc ::tk::MenuNextMenu {menu direction} {
 #				-1 means go to the next higher entry.
 
 proc ::tk::MenuNextEntry {menu count} {
-    set last [$menu index last]
-    if {$last < 0} {
+    if {[$menu index last] eq "none"} {
 	return
     }
-    set length [expr {$last+1}]
+    set length [expr {[$menu index last]+1}]
     set quitAfter $length
-    set activeindex [$menu index active]
-    if {$activeindex < 0} {
+    set active [$menu index active]
+    if {$active eq "none"} {
 	set i 0
     } else {
-	set i [expr {$activeindex + $count}]
+	set i [expr {$active + $count}]
     }
     while {1} {
 	if {$quitAfter <= 0} {
@@ -852,7 +850,7 @@ proc ::tk::MenuNextEntry {menu count} {
 		break
 	    }
 	}
-	if {$i == $activeindex} {
+	if {$i == $active} {
 	    return
 	}
 	incr i $count
@@ -891,7 +889,7 @@ proc ::tk::MenuNextEntry {menu count} {
 
 proc ::tk::MenuFind {w char} {
     set char [string tolower $char]
-    set windowlist [winfo children $w]
+    set windowlist [winfo child $w]
 
     foreach child $windowlist {
 	# Don't descend into other toplevels.
@@ -905,12 +903,13 @@ proc ::tk::MenuFind {w char} {
 	    }
 	    set last [$child index last]
 	    for {set i [$child cget -tearoff]} {$i <= $last} {incr i} {
-		if {([$child type $i] eq "separator") || ([$child entrycget $i -state] eq "disabled")} {
+		if {[$child type $i] eq "separator"} {
 		    continue
 		}
-		set underline [$child entrycget $i -underline]
-		if {$underline >= 0} {
-		    if {$char eq [string tolower [string index [$child entrycget $i -label] $underline]]} {
+		set char2 [string index [$child entrycget $i -label] \
+			[$child entrycget $i -underline]]
+		if {$char eq [string tolower $char2] || $char eq ""} {
+		    if {[$child entrycget $i -state] ne "disabled"} {
 			return $child
 		    }
 		}
@@ -925,12 +924,8 @@ proc ::tk::MenuFind {w char} {
 	}
 	switch -- [winfo class $child] {
 	    Menubutton {
-		if {[$child cget -underline] < 0} {
-		    set char2 ""
-		} else {
-		    set char2 [string index [$child cget -text] \
-			    [$child cget -underline]]
-		}
+		set char2 [string index [$child cget -text] \
+			[$child cget -underline]]
 		if {$char eq [string tolower $char2] || $char eq ""} {
 		    if {[$child cget -state] ne "disabled"} {
 			return $child
@@ -946,7 +941,7 @@ proc ::tk::MenuFind {w char} {
 	    }
 	}
     }
-    return {}
+    return ""
 }
 
 # ::tk::TraverseToMenu --
@@ -1031,6 +1026,9 @@ proc ::tk::TraverseWithinMenu {w char} {
     }
     set char [string tolower $char]
     set last [$w index last]
+    if {$last eq "none"} {
+	return
+    }
     for {set i 0} {$i <= $last} {incr i} {
 	if {[catch {set char2 [string index \
 		[$w entrycget $i -label] [$w entrycget $i -underline]]}]} {
@@ -1070,10 +1068,13 @@ proc ::tk::MenuFirstEntry menu {
 	return
     }
     tk_menuSetFocus $menu
-    if {[$menu index active] >= 0} {
+    if {[$menu index active] ne "none"} {
 	return
     }
     set last [$menu index last]
+    if {$last eq "none"} {
+	return
+    }
     for {set i 0} {$i <= $last} {incr i} {
 	if {([catch {set state [$menu entrycget $i -state]}] == 0) \
 		&& $state ne "disabled" && [$menu type $i] ne "tearoff"} {
@@ -1113,6 +1114,9 @@ proc ::tk::MenuFindName {menu s} {
 	return $i
     }
     set last [$menu index last]
+    if {$last eq "none"} {
+	return ""
+    }
     for {set i 0} {$i <= $last} {incr i} {
 	if {![catch {$menu entrycget $i -label} label]} {
 	    if {$label eq $s} {
@@ -1203,18 +1207,18 @@ if {[tk windowingsystem] eq "aqua"} {
 		incr x [expr {[winfo width $button]}]
 	    }
 	    default {  # flush
-		if {[$button cget -indicatoron]} {
-		    if {$cx ne ""} {
-			set x [expr {$cx - [winfo reqwidth $menu] / 2}]
-			set l [font metrics [$menu cget -font] -linespace]
-			set y [expr {$cy - $l/2 - 2}]
-		    } else {
-			incr x [expr {([winfo width $button] - \
+                if {[$button cget -indicatoron]} {
+                    if {$cx ne ""} {
+                        set x [expr {$cx - [winfo reqwidth $menu] / 2}]
+                        set l [font metrics [$menu cget -font] -linespace]
+                        set y [expr {$cy - $l/2 - 2}]
+                    } else {
+                        incr x [expr {([winfo width $button] - \
 				[winfo reqwidth $menu])/ 2}]
-		    }
-		} else {
-		    incr y [winfo height $button]
-		}
+                    }
+                } else {
+                    incr y [winfo height $button]
+                }
 	    }
 	}
 	PostOverPoint $menu $x $y $entry

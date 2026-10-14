@@ -2,7 +2,7 @@
 #
 #	Choose directory dialog implementation for Unix/Mac.
 #
-# Copyright © 1998-2000 Scriptics Corporation.
+# Copyright (c) 1998-2000 by Scriptics Corporation.
 # All rights reserved.
 
 # Make sure the tk::dialog namespace, in which all dialogs should live, exists
@@ -28,9 +28,9 @@ proc ::tk::dialog::file::chooseDir:: {args} {
     Config $dataName $args
 
     if {$data(-parent) eq "."} {
-	set w .$dataName
+        set w .$dataName
     } else {
-	set w $data(-parent).$dataName
+        set w $data(-parent).$dataName
     }
 
     # (re)create the dialog box if necessary
@@ -118,9 +118,7 @@ proc ::tk::dialog::file::chooseDir:: {args} {
     foreach trace [trace info variable data(selectPath)] {
 	trace remove variable data(selectPath) [lindex $trace 0] [lindex $trace 1]
     }
-    if {[winfo exists $data(dirMenuBtn)]} {
-	$data(dirMenuBtn) configure -textvariable {}
-    }
+    $data(dirMenuBtn) configure -textvariable {}
 
     # Return value to user
     #

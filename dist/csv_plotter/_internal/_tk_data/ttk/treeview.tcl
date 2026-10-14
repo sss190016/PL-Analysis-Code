@@ -7,40 +7,37 @@ namespace eval ttk::treeview {
 
     # Enter/Leave/Motion
     #
-    set State(activeWidget)	{}
-    set State(activeHeading)	{}
+    set State(activeWidget) 	{}
+    set State(activeHeading) 	{}
 
     # Press/drag/release:
     #
-    set State(pressMode)	none
+    set State(pressMode) 	none
     set State(pressX)		0
 
     # For pressMode == "resize"
     set State(resizeColumn)	#0
 
     # For pressmode == "heading"
-    set State(heading)		{}
-
-    set State(cellAnchor)	{}
-    set State(cellAnchorOp)	"set"
+    set State(heading)  	{}
 }
 
 ### Widget bindings.
 #
 
-bind Treeview	<Motion>		{ ttk::treeview::Motion %W %x %y }
+bind Treeview	<Motion> 		{ ttk::treeview::Motion %W %x %y }
 bind Treeview	<B1-Leave>		{ #nothing }
 bind Treeview	<Leave>			{ ttk::treeview::ActivateHeading {} {}}
-bind Treeview	<Button-1>		{ ttk::treeview::Press %W %x %y }
-bind Treeview	<Double-Button-1>	{ ttk::treeview::DoubleClick %W %x %y }
-bind Treeview	<ButtonRelease-1>	{ ttk::treeview::Release %W %x %y }
-bind Treeview	<B1-Motion>		{ ttk::treeview::Drag %W %x %y }
-bind Treeview	<Up>			{ ttk::treeview::Keynav %W up }
-bind Treeview	<Down>			{ ttk::treeview::Keynav %W down }
-bind Treeview	<Right>			{ ttk::treeview::Keynav %W right }
-bind Treeview	<Left>			{ ttk::treeview::Keynav %W left }
+bind Treeview	<Button-1> 		{ ttk::treeview::Press %W %x %y }
+bind Treeview	<Double-Button-1> 	{ ttk::treeview::DoubleClick %W %x %y }
+bind Treeview	<ButtonRelease-1> 	{ ttk::treeview::Release %W %x %y }
+bind Treeview	<B1-Motion> 		{ ttk::treeview::Drag %W %x %y }
+bind Treeview 	<Up>    		{ ttk::treeview::Keynav %W up }
+bind Treeview 	<Down>  		{ ttk::treeview::Keynav %W down }
+bind Treeview 	<Right> 		{ ttk::treeview::Keynav %W right }
+bind Treeview 	<Left>  		{ ttk::treeview::Keynav %W left }
 bind Treeview	<Prior>			{ %W yview scroll -1 pages }
-bind Treeview	<Next>			{ %W yview scroll  1 pages }
+bind Treeview	<Next> 			{ %W yview scroll  1 pages }
 bind Treeview	<Return>		{ ttk::treeview::ToggleFocus %W }
 bind Treeview	<space>			{ ttk::treeview::ToggleFocus %W }
 
@@ -59,24 +56,13 @@ ttk::copyBindings TtkScrollable Treeview
 # @@@ TODO: verify/rewrite up and down code.
 #
 proc ttk::treeview::Keynav {w dir} {
-    variable State
     set focus [$w focus]
     if {$focus eq ""} { return }
-
-    set cells [expr {[$w cget -selecttype] eq "cell"}]
-
-    if {$cells} {
-	lassign $State(cellAnchor) _ colAnchor
-	# Just in case, give it a valid value
-	if {$colAnchor eq ""} {
-	    set colAnchor "#1"
-	}
-    }
 
     switch -- $dir {
 	up {
 	    if {[set up [$w prev $focus]] eq ""} {
-		set focus [$w parent $focus]
+	        set focus [$w parent $focus]
 	    } else {
 		while {[$w item $up -open] && [llength [$w children $up]]} {
 		    set up [lindex [$w children $up] end]
@@ -86,7 +72,7 @@ proc ttk::treeview::Keynav {w dir} {
 	}
 	down {
 	    if {[$w item $focus -open] && [llength [$w children $focus]]} {
-		set focus [lindex [$w children $focus] 0]
+	        set focus [lindex [$w children $focus] 0]
 	    } else {
 		set up $focus
 		while {$up ne "" && [set down [$w next $up]] eq ""} {
@@ -96,46 +82,19 @@ proc ttk::treeview::Keynav {w dir} {
 	    }
 	}
 	left {
-	    if {$cells} {
-		# This assumes that colAnchor is of the "#N" format.
-		set colNo [string range $colAnchor 1 end]
-		set firstCol [expr {"tree" ni [$w cget -show]}]
-		if {$colNo >  $firstCol} {
-		    incr colNo -1
-		    set colAnchor "#$colNo"
-		}
-	    } elseif {[$w item $focus -open] && [llength [$w children $focus]]} {
-		CloseItem $w $focus
+	    if {[$w item $focus -open] && [llength [$w children $focus]]} {
+	    	CloseItem $w $focus
 	    } else {
-		set focus [$w parent $focus]
+	    	set focus [$w parent $focus]
 	    }
 	}
 	right {
-	    if {$cells} {
-		set colNo [string range $colAnchor 1 end]
-		set dispCol [$w cget -displaycolumns]
-		if {$dispCol eq "#all"} {
-		    set lastCol [llength [$w cget -columns]]
-		} else {
-		    set lastCol [llength $dispCol]
-		}
-		if {$colNo < ($lastCol - 1)} {
-		    incr colNo
-		    set colAnchor "#$colNo"
-		}
-	    } else {
-		OpenItem $w $focus
-	    }
+	    OpenItem $w $focus
 	}
     }
 
     if {$focus != {}} {
-	if {$cells} {
-	    set cell [list $focus $colAnchor]
-	    SelectOp $w $focus $cell choose
-	} else {
-	    SelectOp $w $focus "" choose
-	}
+	SelectOp $w $focus choose
     }
 }
 
@@ -186,27 +145,13 @@ proc ttk::treeview::ActivateHeading {w heading} {
     }
 }
 
-## IndentifyCell -- Locate the cell at coordinate
-#	Only active when -selecttype is "cell", and leaves cell empty otherwise.
-#       Down the call chain it is enough to check cell to know the selecttype.
-proc ttk::treeview::IdentifyCell {w x y} {
-    set cell {}
-    if {[$w cget -selecttype] eq "cell"} {
-	# Later handling assumes that the column in the cell ID is of the
-	# format #N, which is always the case from "identify cell"
-	set cell [$w identify cell $x $y]
-    }
-    return $cell
-}
-
 ## Select $w $x $y $selectop
 #	Binding procedure for selection operations.
 #	See "Selection modes", below.
 #
 proc ttk::treeview::Select {w x y op} {
     if {[set item [$w identify row $x $y]] ne "" } {
-	set cell [IdentifyCell $w $x $y]
-	SelectOp $w $item $cell $op
+	SelectOp $w $item $op
     }
 }
 
@@ -231,9 +176,7 @@ proc ttk::treeview::Press {w x y} {
 	tree -
 	cell {
 	    set item [$w identify item $x $y]
-	    set cell [IdentifyCell $w $x $y]
-
-	    SelectOp $w $item $cell choose
+	    SelectOp $w $item choose
 	    switch -glob -- [$w identify element $x $y] {
 		*indicator -
 		*disclosure { Toggle $w $item }
@@ -293,11 +236,11 @@ proc ttk::treeview::heading.press {w x y} {
 proc ttk::treeview::heading.drag {w x y} {
     variable State
     if {   [$w identify region $x $y] eq "heading"
-	&& [$w identify column $x $y] eq $State(heading)
+        && [$w identify column $x $y] eq $State(heading)
     } {
-	$w heading $State(heading) state pressed
+    	$w heading $State(heading) state pressed
     } else {
-	$w heading $State(heading) state !pressed
+    	$w heading $State(heading) state !pressed
     }
 }
 
@@ -316,51 +259,35 @@ proc ttk::treeview::heading.release {w} {
 #	Dispatch to appropriate selection operation
 #	depending on current value of -selectmode.
 #
-proc ttk::treeview::SelectOp {w item cell op} {
-    select.$op.[$w cget -selectmode] $w $item $cell
+proc ttk::treeview::SelectOp {w item op} {
+    select.$op.[$w cget -selectmode] $w $item
 }
 
 ## -selectmode none:
 #
-proc ttk::treeview::select.choose.none {w item cell} { $w focus $item; $w see $item }
-proc ttk::treeview::select.toggle.none {w item cell} { $w focus $item; $w see $item }
-proc ttk::treeview::select.extend.none {w item cell} { $w focus $item; $w see $item }
+proc ttk::treeview::select.choose.none {w item} { $w focus $item; $w see $item }
+proc ttk::treeview::select.toggle.none {w item} { $w focus $item; $w see $item }
+proc ttk::treeview::select.extend.none {w item} { $w focus $item; $w see $item }
 
 ## -selectmode browse:
 #
-proc ttk::treeview::select.choose.browse {w item cell} { BrowseTo $w $item $cell }
-proc ttk::treeview::select.toggle.browse {w item cell} { BrowseTo $w $item $cell }
-proc ttk::treeview::select.extend.browse {w item cell} { BrowseTo $w $item $cell }
+proc ttk::treeview::select.choose.browse {w item} { BrowseTo $w $item }
+proc ttk::treeview::select.toggle.browse {w item} { BrowseTo $w $item }
+proc ttk::treeview::select.extend.browse {w item} { BrowseTo $w $item }
 
 ## -selectmode multiple:
 #
-proc ttk::treeview::select.choose.extended {w item cell} {
-    BrowseTo $w $item $cell
+proc ttk::treeview::select.choose.extended {w item} {
+    BrowseTo $w $item
 }
-proc ttk::treeview::select.toggle.extended {w item cell} {
-    variable State
-    if {$cell ne ""} {
-	$w cellselection toggle [list $cell]
-	set State(cellAnchor) $cell
-	set State(cellAnchorOp) add
-    } else {
-	$w selection toggle [list $item]
-    }
+proc ttk::treeview::select.toggle.extended {w item} {
+    $w selection toggle [list $item]
 }
-proc ttk::treeview::select.extend.extended {w item cell} {
-    variable State
-    if {$cell ne ""} {
-	if {$State(cellAnchor) ne ""} {
-	    $w cellselection $State(cellAnchorOp) $State(cellAnchor) $cell
-	} else {
-	    BrowseTo $w $item $cell
-	}
+proc ttk::treeview::select.extend.extended {w item} {
+    if {[set anchor [$w focus]] ne ""} {
+	$w selection set [between $w $anchor $item]
     } else {
-	if {[set anchor [$w focus]] ne ""} {
-	    $w selection set [between $w $anchor $item]
-	} else {
-	    BrowseTo $w $item $cell
-	}
+    	BrowseTo $w $item
     }
 }
 
@@ -392,10 +319,10 @@ proc ttk::treeview::ScanBetween {tv item1 item2 item} {
     variable selectingBetween
 
     if {$item eq $item1 || $item eq $item2} {
-	lappend between $item
+    	lappend between $item
 	set selectingBetween [expr {!$selectingBetween}]
     } elseif {$selectingBetween} {
-	lappend between $item
+    	lappend between $item
     }
     foreach child [$tv children $item] {
 	ScanBetween $tv $item1 $item2 $child
@@ -426,7 +353,7 @@ proc ttk::treeview::Toggle {w item} {
     # don't allow toggling on indicators that
     # are not present in front of leaf items
     if {[$w children $item] == {}} {
-	return
+        return
     }
     # not a leaf, toggle!
     if {[$w item $item -open]} {
@@ -441,24 +368,16 @@ proc ttk::treeview::Toggle {w item} {
 proc ttk::treeview::ToggleFocus {w} {
     set item [$w focus]
     if {$item ne ""} {
-	Toggle $w $item
+    	Toggle $w $item
     }
 }
 
 ## BrowseTo -- navigate to specified item; set focus and selection
 #
-proc ttk::treeview::BrowseTo {w item cell} {
-    variable State
-
+proc ttk::treeview::BrowseTo {w item} {
     $w see $item
     $w focus $item
-    set State(cellAnchor) $cell
-    set State(cellAnchorOp) set
-    if {$cell ne ""} {
-	$w cellselection set [list $cell]
-    } else {
-	$w selection set [list $item]
-    }
+    $w selection set [list $item]
 }
 
 #*EOF*

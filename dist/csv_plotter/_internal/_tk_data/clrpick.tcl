@@ -3,7 +3,7 @@
 #	Color selection dialog for platforms that do not support a
 #	standard color selection dialog.
 #
-# Copyright © 1996 Sun Microsystems, Inc.
+# Copyright (c) 1996 Sun Microsystems, Inc.
 #
 # See the file "license.terms" for information on usage and redistribution
 # of this file, and for a DISCLAIMER OF ALL WARRANTIES.
@@ -50,19 +50,17 @@ proc ::tk::dialog::color:: {args} {
     set data(NUM_COLORBARS) 16
 
     # BARS_WIDTH is the number of pixels wide the color bar portion of the
-    # canvas is. BARS_WIDTH, BARS_WIDTH * 1.25, BARS_WIDTH * 1.5, and
-    # BARS_WIDTH * 1.75 must be multiples of NUM_COLORBARS.
-    set data(BARS_WIDTH) [::tk::ScaleNum 192]
+    # canvas is. This number must be a multiple of NUM_COLORBARS
+    set data(BARS_WIDTH) 160
 
     # PLGN_WIDTH is the number of pixels wide of the triangular selection
     # polygon. This also results in the definition of the padding on the
-    # left and right sides which is half of PLGN_WIDTH. PLGN_WIDTH,
-    # PLGN_WIDTH * 1.25, PLGN_WIDTH * 1.5, and PLGN_WIDTH * 1.75 must be even.
-    set data(PLGN_WIDTH) [::tk::ScaleNum 8]
+    # left and right sides which is half of PLGN_WIDTH. Make this number even.
+    set data(PLGN_HEIGHT) 10
 
     # PLGN_HEIGHT is the height of the selection polygon and the height of the
     # selection rectangle at the bottom of the color bar. No restrictions.
-    set data(PLGN_HEIGHT) [::tk::ScaleNum 8]
+    set data(PLGN_WIDTH) 10
 
     Config $dataName $args
     InitValues $dataName
@@ -237,7 +235,7 @@ proc ::tk::dialog::color::BuildDialog {w} {
 	entry $box.entry -textvariable \
 		::tk::dialog::color::[winfo name $w]($color,intensity) \
 		-width 4
-	pack $box.label -side left -fill y -padx 1.5p -pady 2p
+	pack $box.label -side left -fill y -padx 2 -pady 3
 	pack $box.entry -side left -anchor n -pady 0
 	pack $box -side left -fill both
 
@@ -253,7 +251,7 @@ proc ::tk::dialog::color::BuildDialog {w} {
 	pack $f.color -expand yes -fill both
 	pack $f.sel -expand yes -fill both
 
-	pack $f -side top -fill x -padx 0 -pady 1.5p
+	pack $f -side top -fill x -padx 0 -pady 2
 
 	set data($color,entry) $box.entry
 	set data($color,col) $f.color
@@ -274,7 +272,7 @@ proc ::tk::dialog::color::BuildDialog {w} {
 	bind $box.entry <Return> [list tk::dialog::color::HandleRGBEntry $w]
     }
 
-    pack $stripsFrame -side left -fill both -padx 3p -pady 7.5p
+    pack $stripsFrame -side left -fill both -padx 4 -pady 10
 
     # The selFrame contains a frame that demonstrates the currently
     # selected color
@@ -286,10 +284,10 @@ proc ::tk::dialog::color::BuildDialog {w} {
 	    -textvariable ::tk::dialog::color::[winfo name $w](selection) \
 	    -width 16]
     set f1  [frame $selFrame.f1 -relief sunken -bd 2]
-    set data(finalCanvas) [frame $f1.demo -bd 0 -width 75p -height 51p]
+    set data(finalCanvas) [frame $f1.demo -bd 0 -width 100 -height 70]
 
-    pack $lab $ent -side top -fill x -padx 3p -pady 1.5p
-    pack $f1 -expand yes -anchor nw -fill both -padx 4.5p -pady 7.5p
+    pack $lab $ent -side top -fill x -padx 4 -pady 2
+    pack $f1 -expand yes -anchor nw -fill both -padx 6 -pady 10
     pack $data(finalCanvas) -expand yes -fill both
 
     bind $ent <Return> [list tk::dialog::color::HandleSelEntry $w]
@@ -310,7 +308,7 @@ proc ::tk::dialog::color::BuildDialog {w} {
     set data(cancelBtn)  $botFrame.cancel
 
     grid x $botFrame.ok x $botFrame.cancel x -sticky ew
-    grid configure $botFrame.ok $botFrame.cancel -padx 7.5p -pady 7.5p
+    grid configure $botFrame.ok $botFrame.cancel -padx 10 -pady 10
     grid columnconfigure $botFrame {0 4} -weight 1 -uniform space
     grid columnconfigure $botFrame {1 3} -weight 1 -uniform button
     grid columnconfigure $botFrame 2 -weight 2 -uniform space
@@ -322,6 +320,7 @@ proc ::tk::dialog::color::BuildDialog {w} {
     bind $w <Alt-Key> [list tk::AltKeyInDialog $w %A]
 
     wm protocol $w WM_DELETE_WINDOW [list tk::dialog::color::CancelCmd $w]
+    bind $lab <Destroy> [list tk::dialog::color::CancelCmd $w]
 }
 
 # ::tk::dialog::color::SetRGBValue --
