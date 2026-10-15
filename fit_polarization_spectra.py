@@ -31,17 +31,17 @@ from scipy.signal import find_peaks, savgol_filter
 from scipy.special import voigt_profile
 
 # ----------------------------------------------------------------- settings
-DATA_DIR = Path(r"C:\Users\seans\Documents\CdSe\082126\S2\top\exportedLineCuts")
+DATA_DIR = Path(r"/Users/seans/Documents/CdSe/082126/S1/lower/exportedLineCuts")  # folder containing the CSVs
 #DATA_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 OUTPUT_DIR = DATA_DIR / "fit_results"
 FILE_REGEX = r"S\d+_(\d+)[._]spe\D*(\d+).*\.csv$"   # e.g. S1_0.spe53LineEV.csv
 ANGLE_STEP = 20                                   # degrees per x step
 
 PEAK_SHAPE = "voigt"    # "gaussian", "lorentzian", or "voigt"
-MIN_PEAKS, MAX_PEAKS = 2, 5
+MIN_PEAKS, MAX_PEAKS = 2, 3
 BACKGROUND = "linear"      # "constant", "linear", or "none" (separate for H, V)
 SHARE_WIDTHS = False        # True: a peak has the same FWHM in H and V
-MAX_SHIFT = 5.0            # V peak centre may sit up to +/- this far (meV)
+MAX_SHIFT = 9.0            # V peak centre may sit up to +/- this far (meV)
                            # from the H centre. 0 = identical positions.
 X_RANGE = None             # e.g. (1750, 1950) to fit only part of the spectrum
 X_LABEL = "Energy (meV)"
@@ -425,7 +425,9 @@ def peak_rows(res):
                 cen, cen_err = pk[0], ek[0]
             rows.append(dict(polarization=pol, center=cen, center_err=cen_err,
                              fwhm=f, fwhm_err=np.sqrt(ferr),
-                             area=pk[1 + k], area_err=ek[1 + k]))
+                             area=pk[1 + k], area_err=ek[1 + k],
+                             shift_VminusH=pk[-1], shift_err=ek[-1],
+                             max_shift=MAX_SHIFT))
     rows.sort(key=lambda r: (r["polarization"], r["center"]))
     for pol in POLS:
         for j, r in enumerate([r for r in rows if r["polarization"] == pol], 1):
@@ -521,7 +523,8 @@ def main():
         print(f"  x={xidx:2d} ({ANGLE_STEP * xidx:3d}°): {res['n']} peaks, H centre(V shift): {cs}")
 
     cols = ["x_index", "rotation_deg", "polarization", "peak", "center",
-            "center_err", "fwhm", "fwhm_err", "area", "area_err"]
+            "center_err", "fwhm", "fwhm_err", "area", "area_err",
+            "shift_VminusH", "shift_err", "max_shift"]
     peaks = pd.DataFrame(peak_out, columns=cols)
     peaks.to_csv(OUTPUT_DIR / "peak_fits.csv", index=False)
     pd.DataFrame(summary).to_csv(OUTPUT_DIR / "fit_summary.csv", index=False)

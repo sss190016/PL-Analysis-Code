@@ -14,7 +14,9 @@ Usage:
 Outputs (in <folder>\\fit_results\\polar_plots):
   - polar_peak_<centre>meV.png   one polar plot per peak
   - polar_all_peaks.png          all tracked peaks side by side
-  - polar_peak_areas.csv         area table: one row per angle, per peak
+  - shift_peak_<centre>meV.png   H/V peak centre and V-H shift vs angle
+  - shift_all_peaks.png          the same for all tracked peaks
+  - polar_peak_areas.csv         area / centre / shift table, per angle, per peak
 """
 
 import sys
@@ -25,7 +27,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # ----------------------------------------------------------------- settings
-DATA_DIR = Path(r"C:\Users\seans\Documents\CdSe\082126\S2\top\exportedLineCuts")
+DATA_DIR = Path(r"/Users/seans/Documents/CdSe/082126/S1/lower/exportedLineCuts")  # folder containing the CSVs
 #DATA_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 FIT_CSV = DATA_DIR / "fit_results" / "peak_fits.csv"
 OUT_DIR = DATA_DIR / "fit_results" / "polar_plots"
@@ -35,8 +37,8 @@ OUT_DIR = DATA_DIR / "fit_results" / "polar_plots"
 #            least MIN_PRESENCE of the angles.
 #   list  -> plot exactly these centres (meV), e.g. [1856, 1882]
 PEAK_CENTERS = None
-GROUP_TOL = 12.0        # peaks within this many meV of each other = same peak
-MIN_PRESENCE = 1.0     # 1.0 = must appear at every angle; 0.8 = 80 % of them
+GROUP_TOL = 17.0        # peaks within this many meV of each other = same peak
+MIN_PRESENCE = 0.9     # 1.0 = must appear at every angle; 0.8 = 80 % of them
 
 POLARIZATIONS = ("H", "V")          # which series to draw
 LABELS = {"H": "H", "V": "V"}          # legend text in "fraction" mode
@@ -54,6 +56,11 @@ R_MAX = None           # fixed radial limit, or None for automatic
 RADIAL_LABEL = "Peak area (a.u.)"
 SIDE_AXIS = True       # vertical intensity scale on the left, like your plot
 CLOSE_LOOP = True      # join the last angle back to the first
+
+# Centre / shift plots
+SHIFT_PLOTS = True     # make the peak-centre and V-H shift plots
+SHIFT_UNITS = "meV"    # x-axis unit of your data (for labels only)
+SHIFT_ERRORS = False   # True: draw +/- 1 sigma error bars on centre/shift plots
 
 
 # ------------------------------------------------------------------ helpers
@@ -107,11 +114,16 @@ def track_peak(df, centre):
             if len(g) and d.min() <= GROUP_TOL:
                 r = g.loc[d.idxmin()]
                 row[f"center_{pol}"] = r["center"]
+                row[f"center_err_{pol}"] = r.get("center_err", np.nan)
+                if pol == "V":
+                    row["shift_fit"] = r.get("shift_VminusH", np.nan)
+                    row["shift_fit_err"] = r.get("shift_err", np.nan)
+                    row["max_shift"] = r.get("max_shift", np.nan)
                 row[f"fwhm_{pol}"] = r["fwhm"]
                 row[f"area_{pol}"] = r["area"]
                 row[f"area_err_{pol}"] = r["area_err"]
             else:
-                for k in ("center", "fwhm", "area", "area_err"):
+                for k in ("center", "center_err", "fwhm", "area", "area_err"):
                     row[f"{k}_{pol}"] = np.nan
         rows.append(row)
     t = pd.DataFrame(rows).sort_values("rotation_deg").reset_index(drop=True)
@@ -119,6 +131,17 @@ def track_peak(df, centre):
     t["frac_H_H/(H+V)"] = t["area_H"] / tot
     t["frac_V_V/(H+V)"] = t["area_V"] / tot
     t["DOLP_(H-V)/(H+V)"] = (t["area_H"] - t["area_V"]) / tot
+    # V - H centre shift: use the fitted shift parameter (correct, correlated
+    # error) when present, otherwise subtract the two centres.
+    diff = t["center_V"] - t["center_H"]
+    diff_err = np.sqrt(t["center_err_H"] ** 2 + t["center_err_V"] ** 2)
+    if "shift_fit" in t:
+        t["shift_V-H"] = t["shift_fit"].fillna(diff)
+        t["shift_err"] = t["shift_fit_err"].fillna(diff_err)
+    else:
+        t["shift_V-H"], t["shift_err"] = diff, diff_err
+    ms = t["max_shift"] if "max_shift" in t else pd.Series(np.nan, index=t.index)
+    t["at_shift_limit"] = np.isclose(np.abs(t["shift_V-H"]), ms, atol=0.05)
     return t
 
 
@@ -219,6 +242,61 @@ def plot_all(tables, path):
     plt.close(fig)
 
 
+# ------------------------------------------------- centre / shift plots
+def draw_shift(ax_c, ax_s, t, centre):
+    """Top: H and V centres vs angle. Bottom: V - H shift vs angle."""
+    ang = t["rotation_deg"].to_numpy(float)
+    for pol in ("H", "V"):
+        ax_c.errorbar(ang, t[f"center_{pol}"],
+                      yerr=t[f"center_err_{pol}"] if SHIFT_ERRORS else None,
+                      fmt="-", marker=MARKERS[pol], color=COLORS[pol], ms=5,
+                      lw=1.2, elinewidth=0.8, capsize=2, label=pol)
+    ax_c.set_ylabel(f"Peak centre ({SHIFT_UNITS})")
+    ax_c.set_title(f"Peak at {centre:.1f} {SHIFT_UNITS}", fontsize=12)
+    ax_c.legend(fontsize=9, ncol=2, loc="best")
+    ax_c.grid(True, color="0.85", lw=0.6)
+
+    sh, se = t["shift_V-H"].to_numpy(float), t["shift_err"].to_numpy(float)
+    lim = t["at_shift_limit"].to_numpy(bool)
+    ax_s.axhline(0, color="0.4", lw=0.8)
+    ax_s.errorbar(ang, sh, yerr=se if SHIFT_ERRORS else None, fmt="-",
+                  marker="o", color="purple",
+                  ms=5, lw=1.2, elinewidth=0.8, capsize=2,
+                  label="V − H")
+    if lim.any():                       # shift pinned at the fit's MAX_SHIFT
+        ax_s.plot(ang[lim], sh[lim], "o", mfc="white", mec="purple", ms=8,
+                  mew=1.5, label="at MAX_SHIFT limit")
+    mean, sem = np.nanmean(sh), np.nanstd(sh) / np.sqrt(np.sum(~np.isnan(sh)))
+    ax_s.axhline(mean, color="purple", lw=0.8, ls="--",
+                 label=f"mean {mean:+.2f} ± {sem:.2f} {SHIFT_UNITS}")
+    ax_s.set_ylabel(f"Shift V − H ({SHIFT_UNITS})")
+    ax_s.set_xlabel("Rotation angle (deg)")
+    ax_s.set_xticks(np.arange(0, ang.max() + 1, 40))
+    ax_s.grid(True, color="0.85", lw=0.6)
+    ax_s.legend(fontsize=8, loc="best")
+
+
+def plot_shift_one(t, centre, path):
+    fig, (a, b) = plt.subplots(2, 1, figsize=(7, 6.5), sharex=True,
+                               gridspec_kw=dict(height_ratios=[1.3, 1]))
+    draw_shift(a, b, t, centre)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def plot_shift_all(tables, path):
+    n = len(tables)
+    fig, axs = plt.subplots(2, n, figsize=(5.5 * n, 6.5), sharex=True,
+                            squeeze=False,
+                            gridspec_kw=dict(height_ratios=[1.3, 1]))
+    for i, (c, t) in enumerate(tables.items()):
+        draw_shift(axs[0, i], axs[1, i], t, c)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------- main
 def main():
     df = load_fits(FIT_CSV)
@@ -241,16 +319,24 @@ def main():
             print(f"  note: peak {c:.1f} meV missing at {miss} angle(s) - gaps")
         tables[c] = t
         plot_one(t, c, OUT_DIR / f"polar_peak_{c:.0f}meV.png")
+        if SHIFT_PLOTS:
+            plot_shift_one(t, c, OUT_DIR / f"shift_peak_{c:.0f}meV.png")
+            n_lim = int(t["at_shift_limit"].sum())
+            print(f"  peak {c:.1f}: mean V-H shift {np.nanmean(t['shift_V-H']):+.2f}"
+                  + (f"  ({n_lim} angle(s) hit MAX_SHIFT)" if n_lim else ""))
         out.append(t.assign(peak_meV=round(c, 1)))
 
     if len(tables) > 1:
         plot_all(tables, OUT_DIR / "polar_all_peaks.png")
+        if SHIFT_PLOTS:
+            plot_shift_all(tables, OUT_DIR / "shift_all_peaks.png")
     cols = ["peak_meV", "x_index", "rotation_deg", "area_H", "area_err_H",
             "area_V", "area_err_V", "frac_H_H/(H+V)", "frac_V_V/(H+V)",
-            "DOLP_(H-V)/(H+V)", "center_H", "center_V",
+            "DOLP_(H-V)/(H+V)", "center_H", "center_err_H", "center_V",
+            "center_err_V", "shift_V-H", "shift_err", "at_shift_limit",
             "fwhm_H", "fwhm_V"]
     pd.concat(out)[cols].to_csv(OUT_DIR / "polar_peak_areas.csv", index=False)
-    print(f"\nSaved {len(tables)} polar plot(s) and polar_peak_areas.csv to "
+    print(f"\nSaved {len(tables)} polar + shift plot(s) and polar_peak_areas.csv to "
           f"{OUT_DIR.resolve()}")
 
 
